@@ -381,6 +381,22 @@ fn index_merkle_from_path(
     let leaf_dir = leaf_dir.as_ref();
 
     let mut index: NewContractIndex = NewContractIndex::new();
+    let mut merkle: ContractsMerkle = ContractsMerkle::default();
+
+    tracing::info!("reading contracts merkle file started");
+    let merkle_bytes = fs::read(merkle_path)?;
+    tracing::info!("reading contracts merkle file finished");
+    tracing::info!("deserializing contracts merkle file started");
+    let mut merkle2: ContractsMerkle = rkyv::from_bytes(&merkle_bytes).map_err(|err| {
+        tracing::info!("deserializing contracts merkle file failed {}", err);
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid contracts merkle file \"{merkle_path:?}\": {err}"),
+        )
+    })?;
+    tracing::info!("deserializing contracts merkle file finished");
+
+    merkle.dict = merkle2.dict.clone();
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
         if entry.path().is_dir() {
@@ -398,7 +414,7 @@ fn index_merkle_from_path(
                 let element_bytes = fs::read(element_path.clone())?;
                 let element: ContractIndexElement =
                     rkyv::from_bytes(&element_bytes).map_err(|err| {
-                        tracing::trace!(
+                        tracing::info!(
                             "deserializing element file failed {}",
                             err
                         );
@@ -409,23 +425,40 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
-                index.insert_contract_index(&contract_id, element)
+                if let Some(h) = element.hash {
+                    merkle.insert(position_from_contract(&contract_id), h);
+                    let _ = merkle.root();
+                }
+                index.insert_contract_index(&contract_id, element);
             }
         }
     }
 
-    tracing::trace!("reading contracts merkle file started");
-    let merkle_bytes = fs::read(merkle_path)?;
-    tracing::trace!("reading contracts merkle file finished");
-    tracing::trace!("deserializing contracts merkle file started");
-    let merkle = rkyv::from_bytes(&merkle_bytes).map_err(|err| {
-        tracing::trace!("deserializing contracts merkle file failed {}", err);
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Invalid contracts merkle file \"{merkle_path:?}\": {err}"),
-        )
-    })?;
-    tracing::trace!("deserializing contracts merkle file finished");
+
+    println!("dict2={:?}", merkle2.dict);
+    println!("dict={:?}", merkle.dict);
+
+    for i in 0..100 {
+        if merkle2.inner_tree.contains(i) != merkle.inner_tree.contains(i)
+        {
+            tracing::info!("****pos different: {}", i);
+        } else {
+            tracing::info!("****ok {}", i);
+            if merkle2.inner_tree.contains(i) {
+                let v1 = merkle2.inner_tree.remove(i).unwrap();
+                let v2 = merkle.inner_tree.remove(i).unwrap();
+                if v1 != v2 {
+                    println!("different: {} {}", hex::encode(v1.as_bytes()), hex::encode(v2.as_bytes()));
+                } else {
+                    println!("the same: {} {}", hex::encode(v1.as_bytes()), hex::encode(v2.as_bytes()));
+                }
+                merkle2.inner_tree.insert(i, v1);
+                let _ = merkle2.inner_tree.root();
+                merkle.inner_tree.insert(i, v2);
+                let _ = merkle.inner_tree.root();
+            }
+        }
+    }
 
     Ok((index, merkle))
 }
@@ -497,6 +530,7 @@ impl Commit {
                     tree: PageTree::new(memory.is_64()),
                     len: 0,
                     page_indices: BTreeSet::new(),
+                    hash: None,
                 },
             );
         }
@@ -511,8 +545,11 @@ impl Commit {
             element.tree.insert(*page_index as u64, hash);
         }
 
+        let root = element.tree.root();
+        let pos = position_from_contract(&contract_id);
         self.contracts_merkle
-            .insert(position_from_contract(&contract_id), *element.tree.root());
+            .insert(pos, *root);
+        element.hash = Some(*root);
     }
 
     pub fn remove_and_insert(&mut self, contract: ContractId, memory: &Memory) {
@@ -570,23 +607,23 @@ fn sync_loop<P: AsRef<Path>>(
                 base,
                 replier,
             } => {
-                tracing::trace!("writing commit started");
+                tracing::info!("writing commit started");
                 let io_result =
                     write_commit(root_dir, &mut commits, base, contracts);
                 match &io_result {
-                    Ok(hash) => tracing::trace!(
+                    Ok(hash) => tracing::info!(
                         "writing commit finished: {:?}",
                         hex::encode(hash.as_bytes())
                     ),
-                    Err(e) => tracing::trace!("writing commit failed {:?}", e),
+                    Err(e) => tracing::info!("writing commit failed {:?}", e),
                 }
                 let _ = replier.send(io_result);
             }
             // Copy all commits and send them back to the caller.
             Call::GetCommits { replier } => {
-                tracing::trace!("get commits started");
+                tracing::info!("get commits started");
                 let _ = replier.send(commits.keys().copied().collect());
-                tracing::trace!("get commits finished");
+                tracing::info!("get commits finished");
             }
             // Delete a commit from disk. If the commit is currently in use - as
             // in it is held by at least one session using `Call::SessionHold` -
@@ -595,7 +632,7 @@ fn sync_loop<P: AsRef<Path>>(
                 commit: root,
                 replier,
             } => {
-                tracing::trace!("delete commit started");
+                tracing::info!("delete commit started");
                 if sessions.contains_key(&root) {
                     match delete_bag.entry(root) {
                         Vacant(entry) => {
@@ -611,7 +648,7 @@ fn sync_loop<P: AsRef<Path>>(
 
                 let io_result = delete_commit_dir(root_dir, root);
                 commits.remove(&root);
-                tracing::trace!("delete commit finished");
+                tracing::info!("delete commit finished");
                 let _ = replier.send(io_result);
             }
             // Finalize commit
@@ -619,7 +656,7 @@ fn sync_loop<P: AsRef<Path>>(
                 commit: root,
                 replier,
             } => {
-                tracing::trace!("finalizing commit started");
+                tracing::info!("finalizing commit started");
                 if sessions.contains_key(&root) {
                     match delete_bag.entry(root) {
                         Vacant(entry) => {
@@ -634,35 +671,35 @@ fn sync_loop<P: AsRef<Path>>(
                 }
 
                 if let Some(commit) = commits.get(&root).cloned() {
-                    tracing::trace!(
+                    tracing::info!(
                         "finalizing commit proper started {}",
                         hex::encode(root.as_bytes())
                     );
                     let io_result = finalize_commit(root, root_dir, &commit);
                     match &io_result {
-                        Ok(_) => tracing::trace!(
+                        Ok(_) => tracing::info!(
                             "finalizing commit proper finished: {:?}",
                             hex::encode(root.as_bytes())
                         ),
-                        Err(e) => tracing::trace!(
+                        Err(e) => tracing::info!(
                             "finalizing commit proper failed {:?}",
                             e
                         ),
                     }
                     commits.remove(&root);
-                    tracing::trace!("finalizing commit finished");
+                    tracing::info!("finalizing commit finished");
                     let _ = replier.send(io_result);
                 } else {
-                    tracing::trace!("finalizing commit finished");
+                    tracing::info!("finalizing commit finished");
                     let _ = replier.send(Ok(()));
                 }
             }
             // Increment the hold count of a commit to prevent it from deletion
             // on a `Call::CommitDelete`.
             Call::CommitHold { base, replier } => {
-                tracing::trace!("hold commit open session started");
+                tracing::info!("hold commit open session started");
                 let base_commit = commits.get(&base).cloned();
-                tracing::trace!("hold commit getting commit finished");
+                tracing::info!("hold commit getting commit finished");
 
                 if base_commit.is_some() {
                     match sessions.entry(base) {
@@ -674,7 +711,7 @@ fn sync_loop<P: AsRef<Path>>(
                         }
                     }
                 }
-                tracing::trace!("hold commit open session finished");
+                tracing::info!("hold commit open session finished");
 
                 let _ = replier.send(base_commit);
             }
@@ -683,7 +720,7 @@ fn sync_loop<P: AsRef<Path>>(
             // `Call::SessionHold`. If this is the last session that held that
             // commit, and there are queued deletions, execute them.
             Call::SessionDrop(base) => {
-                tracing::trace!("session drop started");
+                tracing::info!("session drop started");
                 match sessions.entry(base) {
                     Vacant(_) => unreachable!("If a session is dropped there must be a session hold entry"),
                     Occupied(mut entry) => {
@@ -707,7 +744,7 @@ fn sync_loop<P: AsRef<Path>>(
                         }
                     }
                 };
-                tracing::trace!("session drop finished");
+                tracing::info!("session drop finished");
             }
         }
     }
@@ -742,10 +779,10 @@ fn write_commit<P: AsRef<Path>>(
         }
     }
 
-    tracing::trace!("calculating root started");
+    tracing::info!("calculating root started");
     let root = *commit.root();
     let root_hex = hex::encode(root);
-    tracing::trace!("calculating root finished");
+    tracing::info!("calculating root finished");
 
     // Don't write the commit if it already exists on disk. This may happen if
     // the same transactions on the same base commit for example.
@@ -852,6 +889,7 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
     let merkle_main_path =
         merkle_path_main(directories.main_dir.clone(), commit_id.as_ref())?;
 
+    tracing::info!("persisting index started");
     for (contract_id, element) in commit.index.iter() {
         if commit_contracts.contains_key(contract_id) {
             // todo: write element to disk at
@@ -872,19 +910,24 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
             fs::write(element_file_path.clone(), element_bytes)?;
         }
     }
+    tracing::info!("persisting index finished");
 
-    tracing::trace!("serializing contracts merkle file started");
-    let merkle_bytes = rkyv::to_bytes::<_, 128>(&commit.contracts_merkle)
+    let mut dict_only_merkle: ContractsMerkle = ContractsMerkle::default();
+    dict_only_merkle.dict = commit.contracts_merkle.dict.clone();
+    tracing::info!("persisting merkle started");
+    tracing::info!("serializing contracts merkle file started");
+    let merkle_bytes = rkyv::to_bytes::<_, 128>(&dict_only_merkle)
         .map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Failed serializing contracts merkle file file: {err}"),
             )
         })?;
-    tracing::trace!("serializing contracts merkle file finished");
-    tracing::trace!("writing contracts merkle file started");
+    tracing::info!("serializing contracts merkle file finished");
+    tracing::info!("writing contracts merkle file started");
     fs::write(merkle_main_path.clone(), merkle_bytes)?;
-    tracing::trace!("writing contracts merkle file finished");
+    tracing::info!("writing contracts merkle file finished");
+    tracing::info!("persisting merkle finished");
 
     let base_main_path =
         base_path_main(directories.main_dir, commit_id.as_ref())?;

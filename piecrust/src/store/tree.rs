@@ -84,8 +84,8 @@ pub struct NewContractIndex {
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct ContractsMerkle {
-    inner_tree: Tree,
-    dict: BTreeMap<u64, u64>,
+    pub inner_tree: Tree,//todo: remove pub
+    pub dict: BTreeMap<u64, u64>,//todo: remove pub
 }
 
 impl Default for ContractsMerkle {
@@ -142,6 +142,7 @@ pub struct ContractIndexElement {
     pub tree: PageTree,
     pub len: usize,
     pub page_indices: BTreeSet<usize>,
+    pub hash: Option<Hash>,
 }
 
 impl Default for NewContractIndex {

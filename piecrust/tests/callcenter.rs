@@ -103,7 +103,7 @@ pub fn cc_passthrough() -> Result<(), Error> {
         LIMIT,
     )?;
 
-    let raw = (String::from("read_value"), Vec::<u8>::new());
+    let raw = (String::from("read_va"), Vec::<u8>::new());
 
     let res: (String, Vec<u8>) = session
         .call(center_id, "query_passthrough", &raw, LIMIT)?
