@@ -15,11 +15,12 @@ mod tree;
 
 use std::cell::Ref;
 use std::collections::btree_map::Entry::*;
+use std::collections::btree_map::Keys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::{fs, io, thread};
 
 use dusk_wasmtime::Engine;
@@ -49,11 +50,14 @@ const MAIN_DIR: &str = "main";
 
 /// A store for all contract commits.
 pub struct ContractStore {
-    sync_loop: thread::JoinHandle<()>,
+    sync_loop: Option<thread::JoinHandle<()>>,
     engine: Engine,
 
-    call: mpsc::Sender<Call>,
+    call: Option<mpsc::Sender<Call>>,
     root_dir: PathBuf,
+    pub commit_store: Arc<Mutex<CommitStore>>, /* todo: do something about
+                                                * contract store holding
+                                                * commit store */
 }
 
 impl Debug for ContractStore {
@@ -63,6 +67,38 @@ impl Debug for ContractStore {
             .field("call", &self.call)
             .field("root_dir", &self.root_dir)
             .finish()
+    }
+}
+
+pub struct CommitStore {
+    commits: BTreeMap<Hash, Commit>,
+}
+
+impl CommitStore {
+    pub fn new() -> Self {
+        Self {
+            commits: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert_commit(&mut self, hash: Hash, commit: Commit) {
+        self.commits.insert(hash, commit);
+    }
+
+    pub fn get_commit(&self, hash: &Hash) -> Option<&Commit> {
+        self.commits.get(hash)
+    }
+
+    pub fn contains_key(&self, hash: &Hash) -> bool {
+        self.commits.contains_key(hash)
+    }
+
+    pub fn keys(&self) -> Keys<'_, Hash, Commit> {
+        self.commits.keys()
+    }
+
+    pub fn remove_commit(&mut self, hash: &Hash) {
+        self.commits.remove(hash);
     }
 }
 
@@ -81,30 +117,42 @@ impl ContractStore {
 
         fs::create_dir_all(root_dir)?;
 
-        let (call, calls) = mpsc::channel();
-        let commits = read_all_commits(&engine, root_dir)?;
+        Ok(Self {
+            sync_loop: None,
+            engine,
+            call: None,
+            root_dir: root_dir.into(),
+            commit_store: Arc::new(Mutex::new(CommitStore::new())),
+        })
+    }
 
-        let loop_root_dir = root_dir.to_path_buf();
+    pub fn finish_new(&mut self) -> io::Result<()> {
+        // todo: some more meaningful name
+        let loop_root_dir = self.root_dir.to_path_buf();
+        let (call, calls) = mpsc::channel();
+        let commit_store = self.commit_store.clone();
+
+        read_all_commits(&self.engine, self.root_dir.clone(), commit_store)?;
+
+        let commit_store = self.commit_store.clone();
 
         // The thread is given a name to allow for easily identifying it while
         // debugging.
         let sync_loop = thread::Builder::new()
             .name(String::from("PiecrustSync"))
-            .spawn(|| sync_loop(loop_root_dir, commits, calls))?;
+            .spawn(|| sync_loop(loop_root_dir, commit_store, calls))?;
 
-        Ok(Self {
-            sync_loop,
-            engine,
-            call,
-            root_dir: root_dir.into(),
-        })
+        self.sync_loop = Some(sync_loop);
+        self.call = Some(call);
+        Ok(())
     }
 
     /// Create a new [`ContractSession`] with the given `base` commit.
     ///
     /// Errors if the given base commit does not exist in the store.
     pub fn session(&self, base: Hash) -> io::Result<ContractSession> {
-        let base_commit = self
+        tracing::info!("session creation started");
+        let base_commit_hash = self
             .call_with_replier(|replier| Call::CommitHold { base, replier })
             .ok_or_else(|| {
                 io::Error::new(
@@ -113,7 +161,9 @@ impl ContractStore {
                 )
             })?;
 
-        Ok(self.session_with_base(Some(base_commit)))
+        let r = Ok(self.session_with_base(Some(base_commit_hash)));
+        tracing::info!("session creation finished");
+        r
     }
 
     /// Create a new [`ContractSession`] that has no base commit.
@@ -154,7 +204,10 @@ impl ContractStore {
     /// Return the handle to the thread running the store's synchronization
     /// loop.
     pub fn sync_loop(&self) -> &thread::Thread {
-        self.sync_loop.thread()
+        self.sync_loop
+            .as_ref()
+            .expect("sync thread should exist")
+            .thread()
     }
 
     /// Return the path to the VM directory.
@@ -168,21 +221,30 @@ impl ContractStore {
     {
         let (replier, receiver) = mpsc::sync_channel(1);
 
-        self.call.send(closure(replier)).expect(
-            "The receiver should never be dropped while there are senders",
-        );
+        self.call
+            .as_ref()
+            .expect("call should exist")
+            .send(closure(replier))
+            .expect(
+                "The receiver should never be dropped while there are senders",
+            );
 
         receiver
             .recv()
             .expect("The sender should never be dropped without responding")
     }
 
-    fn session_with_base(&self, base: Option<Commit>) -> ContractSession {
+    fn session_with_base(&self, base: Option<Hash>) -> ContractSession {
+        let base_commit = base
+            .map(|hash| {
+                self.commit_store.lock().unwrap().get_commit(&hash).cloned() // todo: clone here
+            })
+            .flatten();
         ContractSession::new(
             &self.root_dir,
             self.engine.clone(),
-            base,
-            self.call.clone(),
+            base_commit,
+            self.call.as_ref().expect("call should exist").clone(),
         )
     }
 }
@@ -190,9 +252,9 @@ impl ContractStore {
 fn read_all_commits<P: AsRef<Path>>(
     engine: &Engine,
     root_dir: P,
-) -> io::Result<BTreeMap<Hash, Commit>> {
+    commit_store: Arc<Mutex<CommitStore>>,
+) -> io::Result<()> {
     let root_dir = root_dir.as_ref();
-    let mut commits = BTreeMap::new();
 
     let root_dir = root_dir.join(MAIN_DIR);
     fs::create_dir_all(root_dir.clone())?;
@@ -209,11 +271,11 @@ fn read_all_commits<P: AsRef<Path>>(
             }
             let commit = read_commit(engine, entry.path())?;
             let root = *commit.root();
-            commits.insert(root, commit);
+            commit_store.lock().unwrap().insert_commit(root, commit);
         }
     }
 
-    Ok(commits)
+    Ok(())
 }
 
 fn read_commit<P: AsRef<Path>>(
@@ -383,7 +445,7 @@ fn index_merkle_from_path(
                 let element_bytes = fs::read(element_path.clone())?;
                 let element: ContractIndexElement =
                     rkyv::from_bytes(&element_bytes).map_err(|err| {
-                        tracing::trace!(
+                        tracing::info!(
                             "deserializing element file failed {}",
                             err
                         );
@@ -529,20 +591,19 @@ pub(crate) enum Call {
     },
     CommitHold {
         base: Hash,
-        replier: mpsc::SyncSender<Option<Commit>>,
+        replier: mpsc::SyncSender<Option<Hash>>,
     },
     SessionDrop(Hash),
 }
 
 fn sync_loop<P: AsRef<Path>>(
     root_dir: P,
-    commits: BTreeMap<Hash, Commit>,
+    commit_store: Arc<Mutex<CommitStore>>,
     calls: mpsc::Receiver<Call>,
 ) {
     let root_dir = root_dir.as_ref();
 
     let mut sessions = BTreeMap::new();
-    let mut commits = commits;
 
     let mut delete_bag = BTreeMap::new();
 
@@ -555,23 +616,29 @@ fn sync_loop<P: AsRef<Path>>(
                 base,
                 replier,
             } => {
-                tracing::trace!("writing commit started");
-                let io_result =
-                    write_commit(root_dir, &mut commits, base, contracts);
+                tracing::info!("writing commit started");
+                let io_result = write_commit(
+                    root_dir,
+                    &mut commit_store.lock().unwrap(),
+                    base,
+                    contracts,
+                );
                 match &io_result {
-                    Ok(hash) => tracing::trace!(
+                    Ok(hash) => tracing::info!(
                         "writing commit finished: {:?}",
                         hex::encode(hash.as_bytes())
                     ),
-                    Err(e) => tracing::trace!("writing commit failed {:?}", e),
+                    Err(e) => tracing::info!("writing commit failed {:?}", e),
                 }
                 let _ = replier.send(io_result);
             }
             // Copy all commits and send them back to the caller.
             Call::GetCommits { replier } => {
-                tracing::trace!("get commits started");
-                let _ = replier.send(commits.keys().copied().collect());
-                tracing::trace!("get commits finished");
+                tracing::info!("get commits started");
+                let _ = replier.send(
+                    commit_store.lock().unwrap().keys().copied().collect(),
+                );
+                tracing::info!("get commits finished");
             }
             // Delete a commit from disk. If the commit is currently in use - as
             // in it is held by at least one session using `Call::SessionHold` -
@@ -580,7 +647,7 @@ fn sync_loop<P: AsRef<Path>>(
                 commit: root,
                 replier,
             } => {
-                tracing::trace!("delete commit started");
+                tracing::info!("delete commit started");
                 if sessions.contains_key(&root) {
                     match delete_bag.entry(root) {
                         Vacant(entry) => {
@@ -595,8 +662,8 @@ fn sync_loop<P: AsRef<Path>>(
                 }
 
                 let io_result = delete_commit_dir(root_dir, root);
-                commits.remove(&root);
-                tracing::trace!("delete commit finished");
+                commit_store.lock().unwrap().remove_commit(&root);
+                tracing::info!("delete commit finished");
                 let _ = replier.send(io_result);
             }
             // Finalize commit
@@ -604,7 +671,7 @@ fn sync_loop<P: AsRef<Path>>(
                 commit: root,
                 replier,
             } => {
-                tracing::trace!("finalizing commit started");
+                tracing::info!("finalizing commit started");
                 if sessions.contains_key(&root) {
                     match delete_bag.entry(root) {
                         Vacant(entry) => {
@@ -618,38 +685,38 @@ fn sync_loop<P: AsRef<Path>>(
                     continue;
                 }
 
-                if let Some(commit) = commits.get(&root).cloned() {
-                    tracing::trace!(
+                let mut commit_store = commit_store.lock().unwrap();
+                if let Some(commit) = commit_store.get_commit(&root) {
+                    tracing::info!(
                         "finalizing commit proper started {}",
                         hex::encode(root.as_bytes())
                     );
-                    let io_result = finalize_commit(root, root_dir, &commit);
+                    let io_result = finalize_commit(root, root_dir, commit);
                     match &io_result {
-                        Ok(_) => tracing::trace!(
+                        Ok(_) => tracing::info!(
                             "finalizing commit proper finished: {:?}",
                             hex::encode(root.as_bytes())
                         ),
-                        Err(e) => tracing::trace!(
+                        Err(e) => tracing::info!(
                             "finalizing commit proper failed {:?}",
                             e
                         ),
                     }
-                    commits.remove(&root);
-                    tracing::trace!("finalizing commit finished");
+                    commit_store.remove_commit(&root);
+                    tracing::info!("finalizing commit finished");
                     let _ = replier.send(io_result);
                 } else {
-                    tracing::trace!("finalizing commit finished");
+                    tracing::info!("finalizing commit finished");
                     let _ = replier.send(Ok(()));
                 }
             }
             // Increment the hold count of a commit to prevent it from deletion
             // on a `Call::CommitDelete`.
             Call::CommitHold { base, replier } => {
-                tracing::trace!("hold commit open session started");
-                let base_commit = commits.get(&base).cloned();
-                tracing::trace!("hold commit getting commit finished");
-
-                if base_commit.is_some() {
+                tracing::info!("hold commit open session started");
+                let mut maybe_base = None;
+                if commit_store.lock().unwrap().contains_key(&base) {
+                    maybe_base = Some(base);
                     match sessions.entry(base) {
                         Vacant(entry) => {
                             entry.insert(1);
@@ -659,16 +726,16 @@ fn sync_loop<P: AsRef<Path>>(
                         }
                     }
                 }
-                tracing::trace!("hold commit open session finished");
+                tracing::info!("hold commit open session finished");
 
-                let _ = replier.send(base_commit);
+                let _ = replier.send(maybe_base);
             }
             // Signal that a session with a base commit has dropped and
             // decrements the hold count, once incremented using
             // `Call::SessionHold`. If this is the last session that held that
             // commit, and there are queued deletions, execute them.
             Call::SessionDrop(base) => {
-                tracing::trace!("session drop started");
+                tracing::info!("session drop started");
                 match sessions.entry(base) {
                     Vacant(_) => unreachable!("If a session is dropped there must be a session hold entry"),
                     Occupied(mut entry) => {
@@ -684,7 +751,7 @@ fn sync_loop<P: AsRef<Path>>(
                                     for replier in entry.remove() {
                                         let io_result =
                                             delete_commit_dir(root_dir, base);
-                                        commits.remove(&base);
+                                        commit_store.lock().unwrap().remove_commit(&base);
                                         let _ = replier.send(io_result);
                                     }
                                 }
@@ -692,7 +759,7 @@ fn sync_loop<P: AsRef<Path>>(
                         }
                     }
                 };
-                tracing::trace!("session drop finished");
+                tracing::info!("session drop finished");
             }
         }
     }
@@ -700,7 +767,7 @@ fn sync_loop<P: AsRef<Path>>(
 
 fn write_commit<P: AsRef<Path>>(
     root_dir: P,
-    commits: &mut BTreeMap<Hash, Commit>,
+    commit_store: &mut CommitStore,
     base: Option<Commit>,
     commit_contracts: BTreeMap<ContractId, ContractDataEntry>,
 ) -> io::Result<Hash> {
@@ -727,20 +794,20 @@ fn write_commit<P: AsRef<Path>>(
         }
     }
 
-    tracing::trace!("calculating root started");
+    tracing::info!("calculating root started");
     let root = *commit.root();
     let root_hex = hex::encode(root);
-    tracing::trace!("calculating root finished");
+    tracing::info!("calculating root finished");
 
     // Don't write the commit if it already exists on disk. This may happen if
     // the same transactions on the same base commit for example.
-    if commits.contains_key(&root) {
+    if commit_store.contains_key(&root) {
         return Ok(root);
     }
 
     write_commit_inner(root_dir, &commit, commit_contracts, root_hex, base).map(
         |_| {
-            commits.insert(root, commit);
+            commit_store.insert_commit(root, commit);
             root
         },
     )
@@ -834,7 +901,7 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
         }
     }
 
-    tracing::trace!("persisting index started");
+    tracing::info!("persisting index started");
     for (contract_id, element) in commit.index.iter() {
         if commit_contracts.contains_key(contract_id) {
             // todo: write element to disk at
@@ -855,7 +922,7 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
             fs::write(element_file_path.clone(), element_bytes)?;
         }
     }
-    tracing::trace!("persisting index finished");
+    tracing::info!("persisting index finished");
 
     let base_main_path =
         base_path_main(directories.main_dir, commit_id.as_ref())?;

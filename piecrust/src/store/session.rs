@@ -87,11 +87,13 @@ impl ContractSession {
     ///
     /// [`contract`]: ContractSession::contract
     pub fn root(&self) -> Hash {
+        tracing::info!("root called commit cloning: {}", self.base.is_some());
         let mut commit = self.base.clone().unwrap_or(Commit::new());
         for (contract, entry) in &self.contracts {
             commit.insert(*contract, &entry.memory);
         }
         let root = commit.root();
+        tracing::info!("root call finished");
 
         *root
     }
@@ -102,6 +104,10 @@ impl ContractSession {
         &self,
         contract: ContractId,
     ) -> Option<impl Iterator<Item = (usize, &[u8], PageOpening)>> {
+        tracing::info!(
+            "memory_pages called commit cloning: {}",
+            self.base.is_some()
+        );
         let mut commit = self.base.clone().unwrap_or(Commit::new());
         for (contract, entry) in &self.contracts {
             commit.insert(*contract, &entry.memory);
@@ -134,6 +140,7 @@ impl ContractSession {
     ///
     /// [`contract`]: ContractSession::contract
     pub fn commit(&mut self) -> io::Result<Hash> {
+        tracing::info!("commit started");
         let (replier, receiver) = mpsc::sync_channel(1);
 
         let mut contracts = BTreeMap::new();
@@ -153,10 +160,13 @@ impl ContractSession {
                 replier,
             })
             .expect("The receiver should never drop before sending");
+        tracing::info!("commit sent");
 
-        receiver
+        let r = receiver
             .recv()
-            .expect("The receiver should always receive a reply")
+            .expect("The receiver should always receive a reply");
+        tracing::info!("commit finished");
+        r
     }
 
     /// Returns path to a file representing a given commit and page.
