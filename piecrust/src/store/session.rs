@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
+use std::time::SystemTime;
 use std::{io, mem};
 
 use dusk_wasmtime::Engine;
@@ -87,15 +88,23 @@ impl ContractSession {
     ///
     /// [`contract`]: ContractSession::contract
     pub fn root(&self) -> Hash {
+        tracing::trace!("root called commit cloning");
+        let start = SystemTime::now();
         let mut commit = self
             .base
             .as_ref()
-            .map(|c| c.clone())
+            .map(|c| c.fast_clone(&mut self.contracts.keys()))
             .unwrap_or(Commit::new());
+        let stop = SystemTime::now();
+        println!(
+            "XYCLON new={:?}",
+            stop.duration_since(start).expect("duration should work")
+        );
         for (contract, entry) in &self.contracts {
             commit.insert(*contract, &entry.memory);
         }
         let root = commit.root();
+        tracing::trace!("root call finished");
 
         *root
     }

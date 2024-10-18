@@ -440,6 +440,23 @@ impl Commit {
         }
     }
 
+    pub fn fast_clone<'a>(
+        &self,
+        contract_ids: impl Iterator<Item = &'a ContractId>,
+    ) -> Self {
+        let mut index = NewContractIndex::new();
+        for contract_id in contract_ids {
+            self.index.get(&contract_id, None).map(|a| {
+                index.insert_contract_index(&contract_id, a.clone());
+            });
+        }
+        Self {
+            index,
+            contracts_merkle: self.contracts_merkle.clone(),
+            maybe_hash: self.maybe_hash,
+        }
+    }
+
     pub fn inclusion_proofs(
         mut self,
         contract_id: &ContractId,
