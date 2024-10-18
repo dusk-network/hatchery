@@ -706,18 +706,12 @@ fn write_commit<P: AsRef<Path>>(
 ) -> io::Result<Hash> {
     let root_dir = root_dir.as_ref();
 
-    let index = base
-        .as_ref()
-        .map_or(NewContractIndex::new(), |base| base.index.clone());
-    let contracts_merkle =
-        base.as_ref().map_or(ContractsMerkle::default(), |base| {
-            base.contracts_merkle.clone()
-        });
-    let mut commit = Commit {
-        index,
-        contracts_merkle,
-        maybe_hash: base.as_ref().and_then(|base| base.maybe_hash),
+    let base_info = BaseInfo {
+        maybe_base: base.as_ref().map(|base| *base.root()),
+        ..Default::default()
     };
+
+    let mut commit = base.unwrap_or(Commit::new());
 
     for (contract_id, contract_data) in &commit_contracts {
         if contract_data.is_new {
@@ -738,12 +732,11 @@ fn write_commit<P: AsRef<Path>>(
         return Ok(root);
     }
 
-    write_commit_inner(root_dir, &commit, commit_contracts, root_hex, base).map(
-        |_| {
+    write_commit_inner(root_dir, &commit, commit_contracts, root_hex, base_info)
+        .map(|_| {
             commits.insert(root, commit);
             root
-        },
-    )
+        })
 }
 
 /// Writes a commit to disk.
@@ -752,13 +745,9 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
     commit: &Commit,
     commit_contracts: BTreeMap<ContractId, ContractDataEntry>,
     commit_id: S,
-    maybe_base: Option<Commit>,
+    mut base_info: BaseInfo,
 ) -> io::Result<()> {
     let root_dir = root_dir.as_ref();
-    let mut base_info = BaseInfo {
-        maybe_base: maybe_base.map(|base| *base.root()),
-        ..Default::default()
-    };
 
     struct Directories {
         main_dir: PathBuf,
