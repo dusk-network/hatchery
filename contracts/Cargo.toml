@@ -5,6 +5,7 @@ members = [
     "callcenter",
     "initializer",
     "counter",
+    "counter_float",
     "debugger",
     "double_counter",
     "empty_initializer",

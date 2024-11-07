@@ -1,0 +1,16 @@
+[package]
+name = "counter_float"
+version = "0.1.0"
+authors = [
+    "Kristoffer Ström <kristoffer@dusk.network>",
+    "Milosz Muszynski <milosz@dusk.network>",
+]
+edition = "2021"
+
+license = "MPL-2.0"
+
+[dependencies]
+piecrust-uplink = { path = "../../piecrust-uplink", features = ["abi", "dlmalloc"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
