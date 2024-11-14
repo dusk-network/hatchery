@@ -258,7 +258,6 @@ impl NewContractIndex {
     pub fn get_mut(
         &mut self,
         contract: &ContractId,
-        _maybe_commit_id: Option<Hash>,
     ) -> Option<&mut ContractIndexElement> {
         self.inner_contracts.get_mut(contract)
     }
