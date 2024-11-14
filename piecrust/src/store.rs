@@ -509,7 +509,6 @@ fn index_merkle_from_path(
                 0,
             )
             .unwrap_or((contract_leaf_path.join(ELEMENT_FILE), 0));
-            println!("element depth={}", element_depth);
             if element_path.is_file() {
                 let element_bytes = fs::read(&element_path)?;
                 let element: ContractIndexElement =
