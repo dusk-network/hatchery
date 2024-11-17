@@ -407,12 +407,9 @@ fn commit_from_dir<P: AsRef<Path>>(
     // let contracts_merkle_path = dir.join(MERKLE_FILE);
     let leaf_dir = main_dir.join(LEAF_DIR);
     tracing::trace!("before index_merkle_from_path");
-    let (index, contracts_merkle) = index_merkle_from_path(
-        main_dir,
-        leaf_dir,
-        &maybe_hash,
-        commit_store.clone(),
-    )?;
+
+    let index =
+        index_from_path(main_dir, leaf_dir, &maybe_hash, commit_store.clone())?;
     tracing::trace!("after index_merkle_from_path");
 
     let bytecode_dir = main_dir.join(BYTECODE_DIR);
@@ -468,11 +465,12 @@ fn commit_from_dir<P: AsRef<Path>>(
         }
     }
 
-    let base = if let Some(hash_hex) = commit_id {
+    let (base, contracts_merkle) = if let Some(hash_hex) = commit_id {
         let base_info_path = main_dir.join(hash_hex).join(BASE_FILE);
-        base_from_path(base_info_path)?.maybe_base
+        let base_info = base_from_path(base_info_path)?;
+        (base_info.maybe_base, base_info.contracts_merkle)
     } else {
-        None
+        (None, ContractsMerkle::default())
     };
 
     Ok(Commit {
@@ -484,16 +482,15 @@ fn commit_from_dir<P: AsRef<Path>>(
     })
 }
 
-fn index_merkle_from_path(
+fn index_from_path(
     main_path: impl AsRef<Path>,
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
     commit_store: Arc<Mutex<CommitStore>>,
-) -> io::Result<(NewContractIndex, ContractsMerkle)> {
+) -> io::Result<NewContractIndex> {
     let leaf_dir = leaf_dir.as_ref();
 
     let mut index: NewContractIndex = NewContractIndex::new();
-    let mut merkle: ContractsMerkle = ContractsMerkle::default();
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -524,13 +521,6 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
-                if let Some(h) = element.hash() {
-                    merkle.insert_with_int_pos(
-                        position_from_contract(&contract_id),
-                        element.int_pos().expect("int pos should be present"),
-                        h,
-                    );
-                }
                 if element_depth != u32::MAX {
                     index.insert_contract_index(&contract_id, element);
                 } else {
@@ -543,7 +533,7 @@ fn index_merkle_from_path(
         }
     }
 
-    Ok((index, merkle))
+    Ok(index)
 }
 
 fn base_from_path<P: AsRef<Path>>(path: P) -> io::Result<BaseInfo> {
@@ -1057,6 +1047,8 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
         }
     }
     tracing::trace!("persisting index finished");
+
+    base_info.contracts_merkle = commit.contracts_merkle.clone(); //todo: clone
 
     let base_main_path =
         base_path_main(directories.main_dir, commit_id.as_ref())?;

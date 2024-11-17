@@ -151,6 +151,7 @@ pub struct ContractIndex {
 pub struct BaseInfo {
     pub contract_hints: Vec<ContractId>,
     pub maybe_base: Option<Hash>,
+    pub contracts_merkle: ContractsMerkle,
 }
 
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
