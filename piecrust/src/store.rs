@@ -17,7 +17,7 @@ mod tree;
 use std::cell::Ref;
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ use tree::{Hash, NewContractIndex};
 use crate::store::commit::Hulk;
 use crate::store::tree::{
     position_from_contract, BaseInfo, ContractIndexElement, ContractsMerkle,
-    TreePos,
+    MerkleTree,
 };
 pub use bytecode::Bytecode;
 pub use memory::{Memory, PAGE_SIZE};
@@ -45,7 +45,7 @@ const BYTECODE_DIR: &str = "bytecode";
 const MEMORY_DIR: &str = "memory";
 const LEAF_DIR: &str = "leaf";
 const BASE_FILE: &str = "base";
-const TREE_POS_FILE: &str = "tree_pos";
+const MERKLE_FILE: &str = "merkle";
 const ELEMENT_FILE: &str = "element";
 const OBJECTCODE_EXTENSION: &str = "a";
 const METADATA_EXTENSION: &str = "m";
@@ -364,14 +364,14 @@ fn base_path_main<P: AsRef<Path>, S: AsRef<str>>(
     Ok(dir.join(BASE_FILE))
 }
 
-fn tree_pos_path_main<P: AsRef<Path>, S: AsRef<str>>(
+fn merkle_path_main<P: AsRef<Path>, S: AsRef<str>>(
     main_dir: P,
     commit_id: S,
 ) -> io::Result<PathBuf> {
     let commit_id = commit_id.as_ref();
     let dir = main_dir.as_ref().join(commit_id);
     fs::create_dir_all(&dir)?;
-    Ok(dir.join(TREE_POS_FILE))
+    Ok(dir.join(MERKLE_FILE))
 }
 
 fn commit_id_to_hash<S: AsRef<str>>(commit_id: S) -> Hash {
@@ -420,20 +420,8 @@ fn commit_from_dir<P: AsRef<Path>>(
     let leaf_dir = main_dir.join(LEAF_DIR);
     tracing::trace!("before index_merkle_from_path");
 
-    let tree_pos = if let Some(ref hash_hex) = commit_id {
-        let tree_pos_path = main_dir.join(hash_hex).join(TREE_POS_FILE);
-        Some(tree_pos_from_path(tree_pos_path)?.tree_pos)
-    } else {
-        None
-    };
-
-    let (index, contracts_merkle) = index_merkle_from_path(
-        main_dir,
-        leaf_dir,
-        &maybe_hash,
-        commit_store.clone(),
-        tree_pos.as_ref(),
-    )?;
+    let index =
+        index_from_path(main_dir, leaf_dir, &maybe_hash, commit_store.clone())?;
     tracing::trace!("after index_merkle_from_path");
 
     let bytecode_dir = main_dir.join(BYTECODE_DIR);
@@ -489,6 +477,13 @@ fn commit_from_dir<P: AsRef<Path>>(
         }
     }
 
+    let contracts_merkle = if let Some(ref hash_hex) = commit_id {
+        let merkle_path = main_dir.join(hash_hex).join(MERKLE_FILE);
+        merkle_from_path(merkle_path)?.tree
+    } else {
+        unreachable!()
+    };
+
     let base = if let Some(ref hash_hex) = commit_id {
         let base_info_path = main_dir.join(hash_hex).join(BASE_FILE);
         base_from_path(base_info_path)?.maybe_base
@@ -505,17 +500,15 @@ fn commit_from_dir<P: AsRef<Path>>(
     })
 }
 
-fn index_merkle_from_path(
+fn index_from_path(
     main_path: impl AsRef<Path>,
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
     commit_store: Arc<Mutex<CommitStore>>,
-    maybe_tree_pos: Option<&HashMap<ContractId, u64>>,
-) -> io::Result<(NewContractIndex, ContractsMerkle)> {
+) -> io::Result<NewContractIndex> {
     let leaf_dir = leaf_dir.as_ref();
 
     let mut index: NewContractIndex = NewContractIndex::new();
-    let mut merkle: ContractsMerkle = ContractsMerkle::default();
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -546,30 +539,6 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
-                if let Some(h) = element.hash() {
-                    match maybe_tree_pos {
-                        Some(tree_pos) => {
-                            if let Some(pos) = tree_pos.get(&contract_id) {
-                                merkle.insert_with_int_pos(
-                                    position_from_contract(&contract_id),
-                                    *pos,
-                                    h,
-                                    &contract_id,
-                                );
-                            }
-                        }
-                        None => {
-                            merkle.insert_with_int_pos(
-                                position_from_contract(&contract_id),
-                                element
-                                    .int_pos()
-                                    .expect("int pos should be present"),
-                                h,
-                                &contract_id,
-                            );
-                        }
-                    }
-                }
                 if element_depth != u32::MAX {
                     index.insert_contract_index(&contract_id, element);
                 } else {
@@ -582,7 +551,7 @@ fn index_merkle_from_path(
         }
     }
 
-    Ok((index, merkle))
+    Ok(index)
 }
 
 fn base_from_path<P: AsRef<Path>>(path: P) -> io::Result<BaseInfo> {
@@ -599,18 +568,18 @@ fn base_from_path<P: AsRef<Path>>(path: P) -> io::Result<BaseInfo> {
     Ok(base_info)
 }
 
-fn tree_pos_from_path<P: AsRef<Path>>(path: P) -> io::Result<TreePos> {
+fn merkle_from_path<P: AsRef<Path>>(path: P) -> io::Result<MerkleTree> {
     let path = path.as_ref();
 
-    let tree_pos_bytes = fs::read(path)?;
-    let tree_pos = rkyv::from_bytes(&tree_pos_bytes).map_err(|err| {
+    let merkle_bytes = fs::read(path)?;
+    let merkle = rkyv::from_bytes(&merkle_bytes).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Invalid tree positions file \"{path:?}\": {err}"),
         )
     })?;
 
-    Ok(tree_pos)
+    Ok(merkle)
 }
 
 #[derive(Debug, Clone)]
@@ -710,7 +679,7 @@ impl Commit {
 
         let root = *element.tree().root();
         let pos = position_from_contract(&contract_id);
-        let internal_pos = contracts_merkle.insert(pos, root, &contract_id);
+        let internal_pos = contracts_merkle.insert(pos, root);
         element.set_hash(Some(root));
         element.set_int_pos(Some(internal_pos));
     }
@@ -754,6 +723,10 @@ impl Commit {
             .map(|a| unsafe { &mut *a }),
             &mut self.contracts_merkle,
         )
+    }
+
+    pub fn contracts_merkle(&self) -> &ContractsMerkle {
+        &self.contracts_merkle
     }
 }
 
@@ -1122,18 +1095,16 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
         })?;
     fs::write(base_main_path, base_info_bytes)?;
 
-    let tree_pos_main_path =
-        tree_pos_path_main(&directories.main_dir, commit_id.as_ref())?;
-    let tree_pos_bytes = rkyv::to_bytes::<_, 128>(
-        commit.contracts_merkle.tree_pos(),
-    )
-    .map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Failed serializing tree positions file: {err}"),
-        )
-    })?;
-    fs::write(tree_pos_main_path, tree_pos_bytes)?;
+    let merkle_main_path =
+        merkle_path_main(&directories.main_dir, commit_id.as_ref())?;
+    let merkle_bytes = rkyv::to_bytes::<_, 128>(commit.contracts_merkle())
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed serializing merkle file: {err}"),
+            )
+        })?;
+    fs::write(merkle_main_path, merkle_bytes)?;
 
     Ok(())
 }
@@ -1175,7 +1146,7 @@ fn finalize_commit<P: AsRef<Path>>(
     let root = hex::encode(root);
     let commit_path = main_dir.join(&root);
     let base_info_path = commit_path.join(BASE_FILE);
-    let tree_pos_path = commit_path.join(TREE_POS_FILE);
+    let merkle_path = commit_path.join(MERKLE_FILE);
     let base_info = base_from_path(&base_info_path)?;
     for contract_hint in base_info.contract_hints {
         let contract_hex = hex::encode(contract_hint);
@@ -1205,7 +1176,7 @@ fn finalize_commit<P: AsRef<Path>>(
     }
 
     fs::remove_file(base_info_path)?;
-    fs::remove_file(tree_pos_path)?;
+    fs::remove_file(merkle_path)?;
     fs::remove_dir(commit_path)?;
 
     Ok(())

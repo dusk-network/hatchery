@@ -4,7 +4,6 @@
 //
 // Copyright (c) DUSK NETWORK. All rights reserved.
 
-use std::collections::HashMap;
 use std::{
     cell::Ref,
     collections::{BTreeMap, BTreeSet},
@@ -96,9 +95,8 @@ impl NewContractIndex {
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct ContractsMerkle {
-    inner_tree: Tree,
+    pub inner_tree: Tree,
     dict: BTreeMap<u64, u64>,
-    tree_pos: HashMap<ContractId, u64>,
 }
 
 impl Default for ContractsMerkle {
@@ -106,18 +104,12 @@ impl Default for ContractsMerkle {
         Self {
             inner_tree: Tree::new(),
             dict: BTreeMap::new(),
-            tree_pos: HashMap::new(),
         }
     }
 }
 
 impl ContractsMerkle {
-    pub fn insert(
-        &mut self,
-        pos: u64,
-        hash: Hash,
-        contract_id: &ContractId,
-    ) -> u64 {
+    pub fn insert(&mut self, pos: u64, hash: Hash) -> u64 {
         let new_pos = match self.dict.get(&pos) {
             None => {
                 let new_pos = (self.dict.len() + 1) as u64;
@@ -127,20 +119,12 @@ impl ContractsMerkle {
             Some(p) => *p,
         };
         self.inner_tree.insert(new_pos, hash);
-        self.tree_pos.insert(*contract_id, new_pos);
         new_pos
     }
 
-    pub fn insert_with_int_pos(
-        &mut self,
-        pos: u64,
-        int_pos: u64,
-        hash: Hash,
-        contract_id: &ContractId,
-    ) {
+    pub fn insert_with_int_pos(&mut self, pos: u64, int_pos: u64, hash: Hash) {
         self.dict.insert(pos, int_pos);
         self.inner_tree.insert(int_pos, hash);
-        self.tree_pos.insert(*contract_id, int_pos);
     }
 
     pub fn opening(&self, pos: u64) -> Option<TreeOpening> {
@@ -150,10 +134,6 @@ impl ContractsMerkle {
 
     pub fn root(&self) -> Ref<Hash> {
         self.inner_tree.root()
-    }
-
-    pub fn tree_pos(&self) -> &HashMap<ContractId, u64> {
-        &self.tree_pos
     }
 }
 
@@ -175,8 +155,8 @@ pub struct BaseInfo {
 
 #[derive(Debug, Clone, Default, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
-pub struct TreePos {
-    pub tree_pos: HashMap<ContractId, u64>,
+pub struct MerkleTree {
+    pub tree: ContractsMerkle,
 }
 
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
