@@ -17,7 +17,7 @@ mod tree;
 use std::cell::Ref;
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
@@ -510,7 +510,7 @@ fn index_merkle_from_path(
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
     commit_store: Arc<Mutex<CommitStore>>,
-    maybe_tree_pos: Option<&HashMap<ContractId, u64>>,
+    maybe_tree_pos: Option<&Vec<(Hash, u64, u32)>>,
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
     let leaf_dir = leaf_dir.as_ref();
 
@@ -546,30 +546,6 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
-                if let Some(h) = element.hash() {
-                    match maybe_tree_pos {
-                        Some(tree_pos) => {
-                            if let Some(pos) = tree_pos.get(&contract_id) {
-                                merkle.insert_with_int_pos(
-                                    position_from_contract(&contract_id),
-                                    *pos,
-                                    h,
-                                    &contract_id,
-                                );
-                            }
-                        }
-                        None => {
-                            merkle.insert_with_int_pos(
-                                position_from_contract(&contract_id),
-                                element
-                                    .int_pos()
-                                    .expect("int pos should be present"),
-                                h,
-                                &contract_id,
-                            );
-                        }
-                    }
-                }
                 if element_depth != u32::MAX {
                     index.insert_contract_index(&contract_id, element);
                 } else {
@@ -581,6 +557,23 @@ fn index_merkle_from_path(
             }
         }
     }
+
+    match maybe_tree_pos {
+        Some(tree_pos) => {
+            for (hash, pos, int_pos) in tree_pos.iter() {
+                merkle.insert_with_int_pos(*pos, *int_pos as u64, *hash);
+            }
+        }
+        None => {
+            unreachable!()
+        }
+    }
+
+    println!(
+        "COMMIT_FROM_DIR: merkle size={}, tree pos size={}",
+        merkle.len(),
+        merkle.tree_pos().len(),
+    );
 
     Ok((index, merkle))
 }
@@ -710,7 +703,7 @@ impl Commit {
 
         let root = *element.tree().root();
         let pos = position_from_contract(&contract_id);
-        let internal_pos = contracts_merkle.insert(pos, root, &contract_id);
+        let internal_pos = contracts_merkle.insert(pos, root);
         element.set_hash(Some(root));
         element.set_int_pos(Some(internal_pos));
     }

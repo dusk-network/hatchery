@@ -4,7 +4,6 @@
 //
 // Copyright (c) DUSK NETWORK. All rights reserved.
 
-use std::collections::HashMap;
 use std::{
     cell::Ref,
     collections::{BTreeMap, BTreeSet},
@@ -98,7 +97,7 @@ impl NewContractIndex {
 pub struct ContractsMerkle {
     inner_tree: Tree,
     dict: BTreeMap<u64, u64>,
-    tree_pos: HashMap<ContractId, u64>,
+    tree_pos: Vec<(Hash, u64, u32)>,
 }
 
 impl Default for ContractsMerkle {
@@ -106,18 +105,13 @@ impl Default for ContractsMerkle {
         Self {
             inner_tree: Tree::new(),
             dict: BTreeMap::new(),
-            tree_pos: HashMap::new(),
+            tree_pos: Vec::new(),
         }
     }
 }
 
 impl ContractsMerkle {
-    pub fn insert(
-        &mut self,
-        pos: u64,
-        hash: Hash,
-        contract_id: &ContractId,
-    ) -> u64 {
+    pub fn insert(&mut self, pos: u64, hash: Hash) -> u64 {
         let new_pos = match self.dict.get(&pos) {
             None => {
                 let new_pos = (self.dict.len() + 1) as u64;
@@ -127,20 +121,14 @@ impl ContractsMerkle {
             Some(p) => *p,
         };
         self.inner_tree.insert(new_pos, hash);
-        self.tree_pos.insert(*contract_id, new_pos);
+        self.tree_pos.push((hash, pos, new_pos as u32));
         new_pos
     }
 
-    pub fn insert_with_int_pos(
-        &mut self,
-        pos: u64,
-        int_pos: u64,
-        hash: Hash,
-        contract_id: &ContractId,
-    ) {
+    pub fn insert_with_int_pos(&mut self, pos: u64, int_pos: u64, hash: Hash) {
         self.dict.insert(pos, int_pos);
         self.inner_tree.insert(int_pos, hash);
-        self.tree_pos.insert(*contract_id, int_pos);
+        self.tree_pos.push((hash, pos, int_pos as u32));
     }
 
     pub fn opening(&self, pos: u64) -> Option<TreeOpening> {
@@ -152,8 +140,12 @@ impl ContractsMerkle {
         self.inner_tree.root()
     }
 
-    pub fn tree_pos(&self) -> &HashMap<ContractId, u64> {
+    pub fn tree_pos(&self) -> &Vec<(Hash, u64, u32)> {
         &self.tree_pos
+    }
+
+    pub fn len(&self) -> u64 {
+        self.inner_tree.len()
     }
 }
 
@@ -176,7 +168,7 @@ pub struct BaseInfo {
 #[derive(Debug, Clone, Default, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct TreePos {
-    pub tree_pos: HashMap<ContractId, u64>,
+    pub tree_pos: Vec<(Hash, u64, u32)>,
 }
 
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
