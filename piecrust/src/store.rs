@@ -510,7 +510,7 @@ fn index_merkle_from_path(
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
     commit_store: Arc<Mutex<CommitStore>>,
-    maybe_tree_pos: Option<&Vec<(Hash, u64, u32)>>,
+    maybe_tree_pos: Option<&BTreeMap<u32, (Hash, u64)>>,
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
     let leaf_dir = leaf_dir.as_ref();
 
@@ -560,7 +560,7 @@ fn index_merkle_from_path(
 
     match maybe_tree_pos {
         Some(tree_pos) => {
-            for (hash, pos, int_pos) in tree_pos.iter() {
+            for (int_pos, (hash, pos)) in tree_pos.iter() {
                 merkle.insert_with_int_pos(*pos, *int_pos as u64, *hash);
             }
         }

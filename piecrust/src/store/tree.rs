@@ -97,7 +97,7 @@ impl NewContractIndex {
 pub struct ContractsMerkle {
     inner_tree: Tree,
     dict: BTreeMap<u64, u64>,
-    tree_pos: Vec<(Hash, u64, u32)>,
+    tree_pos: BTreeMap<u32, (Hash, u64)>,
 }
 
 impl Default for ContractsMerkle {
@@ -105,7 +105,7 @@ impl Default for ContractsMerkle {
         Self {
             inner_tree: Tree::new(),
             dict: BTreeMap::new(),
-            tree_pos: Vec::new(),
+            tree_pos: BTreeMap::new(),
         }
     }
 }
@@ -121,14 +121,14 @@ impl ContractsMerkle {
             Some(p) => *p,
         };
         self.inner_tree.insert(new_pos, hash);
-        self.tree_pos.push((hash, pos, new_pos as u32));
+        self.tree_pos.insert(new_pos as u32, (hash, pos));
         new_pos
     }
 
     pub fn insert_with_int_pos(&mut self, pos: u64, int_pos: u64, hash: Hash) {
         self.dict.insert(pos, int_pos);
         self.inner_tree.insert(int_pos, hash);
-        self.tree_pos.push((hash, pos, int_pos as u32));
+        self.tree_pos.insert(int_pos as u32, (hash, pos));
     }
 
     pub fn opening(&self, pos: u64) -> Option<TreeOpening> {
@@ -140,7 +140,7 @@ impl ContractsMerkle {
         self.inner_tree.root()
     }
 
-    pub fn tree_pos(&self) -> &Vec<(Hash, u64, u32)> {
+    pub fn tree_pos(&self) -> &BTreeMap<u32, (Hash, u64)> {
         &self.tree_pos
     }
 
@@ -168,7 +168,7 @@ pub struct BaseInfo {
 #[derive(Debug, Clone, Default, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct TreePos {
-    pub tree_pos: Vec<(Hash, u64, u32)>,
+    pub tree_pos: BTreeMap<u32, (Hash, u64)>,
 }
 
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
