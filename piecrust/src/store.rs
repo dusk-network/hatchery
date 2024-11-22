@@ -516,6 +516,7 @@ fn index_merkle_from_path(
 
     let mut index: NewContractIndex = NewContractIndex::new();
     let mut merkle: ContractsMerkle = ContractsMerkle::default();
+    let mut merkle_src1: BTreeMap<u32, (Hash, u64, ContractId)> = BTreeMap::new();
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -532,6 +533,7 @@ fn index_merkle_from_path(
             )
             .unwrap_or((contract_leaf_path.join(ELEMENT_FILE), 0));
             if element_path.is_file() {
+                println!("ELEMENT PATH READ={:?}", element_path);
                 let element_bytes = fs::read(&element_path)?;
                 let element: ContractIndexElement =
                     rkyv::from_bytes(&element_bytes).map_err(|err| {
@@ -546,6 +548,15 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
+                if let Some(h) = element.hash() {
+                    // merkle.insert_with_int_pos(
+                    //     position_from_contract(&contract_id),
+                    //     element.int_pos().expect("int pos should be present"),
+                    //     h,
+                    // );
+                    merkle_src1.insert(element.int_pos().expect("aa") as u32, (h, position_from_contract(&contract_id), contract_id));
+                }
+
                 if element_depth != u32::MAX {
                     index.insert_contract_index(&contract_id, element);
                 } else {
@@ -562,6 +573,16 @@ fn index_merkle_from_path(
         Some(tree_pos) => {
             for (int_pos, (hash, pos)) in tree_pos.iter() {
                 merkle.insert_with_int_pos(*pos, *int_pos as u64, *hash);
+                if let Some((hh,pospos, cid)) = merkle_src1.get(int_pos){
+                    if hash != hh {
+                        println!("DISCREPANCY hashes not equal at int pos={} contract={}", int_pos, hex::encode(cid.as_bytes()));
+                    }
+                    if pos != pospos {
+                        println!("DISCREPANCY pos not equal at int pos={} orig={} src1={}", int_pos, pos, pospos);
+                    }
+                } else {
+                    println!("DISCREPANCY POS not found {}", int_pos);
+                }
             }
         }
         None => {
@@ -570,9 +591,10 @@ fn index_merkle_from_path(
     }
 
     println!(
-        "COMMIT_FROM_DIR: merkle size={}, tree pos size={}",
+        "COMMIT_FROM_DIR: merkle size={}, tree pos size={} commit={:?}",
         merkle.len(),
         merkle.tree_pos().len(),
+        maybe_commit_id.as_ref().map(|a|hex::encode(a.as_bytes()))
     );
 
     Ok((index, merkle))
@@ -1099,6 +1121,7 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
                         format!("Failed serializing element file: {err}"),
                     )
                 })?;
+            println!("ELEMENT_WRITE path={:?} for commit={:?}", element_file_path, commit.maybe_hash.as_ref().map(|a|hex::encode(a.as_bytes())));
             fs::write(&element_file_path, element_bytes)?;
         }
     }
@@ -1192,8 +1215,9 @@ fn finalize_commit<P: AsRef<Path>>(
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
         let dst_leaf_file_path = dst_leaf_path.join(ELEMENT_FILE);
         if src_leaf_file_path.is_file() {
-            fs::rename(src_leaf_file_path, dst_leaf_file_path)?;
+            fs::rename(src_leaf_file_path.clone(), dst_leaf_file_path.clone())?;
         }
+        println!("OVERWROTE ELEMENT {:?} from {:?}", dst_leaf_file_path, src_leaf_file_path);
         fs::remove_dir(src_leaf_path)?;
     }
 

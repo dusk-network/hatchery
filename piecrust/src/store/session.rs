@@ -295,13 +295,18 @@ impl ContractSession {
                                             match page_indices
                                                 .contains(&page_index)
                                             {
-                                                true => Some(
-                                                    Self::find_page(
+                                                true => {
+                                                    let maybe_path = Self::find_page(
                                                         page_index,
                                                         commit_id,
                                                         &memory_path,
                                                         &base_dir,
-                                                    )
+                                                    );
+                                                    if maybe_path.is_none() {
+                                                        println!("MAIN MEMORY for commit {:?} contract {} page {}", commit_id.as_ref().map(|a|hex::encode(a.as_bytes())), hex::encode(contract.as_bytes()), page_index);
+                                                    }
+                                                    Some(
+                                                        maybe_path
                                                     .unwrap_or(
                                                         memory_path.join(
                                                             format!(
@@ -309,7 +314,7 @@ impl ContractSession {
                                                             ),
                                                         ),
                                                     ),
-                                                ),
+                                                )},
                                                 false => None,
                                             }
                                         },

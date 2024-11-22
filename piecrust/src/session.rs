@@ -334,7 +334,10 @@ impl Session {
             Ok(())
         };
 
+        println!("DEPLOYING contract {}", hex::encode(contract_id.as_bytes()));
+
         instantiate().map_err(|err| {
+            println!("REMOVING contract {}", hex::encode(contract_id.as_bytes()));
             self.inner.contract_session.remove_contract(&contract_id);
             err
         })
