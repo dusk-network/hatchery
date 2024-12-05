@@ -28,7 +28,7 @@ use crate::call_tree::{CallTree, CallTreeElem};
 use crate::contract::{ContractData, ContractMetadata, WrappedContract};
 use crate::error::Error::{self, InitalizationError, PersistenceError};
 use crate::instance::WrappedInstance;
-use crate::store::{ContractSession, PageOpening, PAGE_SIZE};
+use crate::store::{CommitRoot, ContractSession, PageOpening, PAGE_SIZE};
 use crate::types::StandardBufSerializer;
 use crate::vm::{HostQueries, HostQuery};
 
@@ -577,8 +577,8 @@ impl Session {
     /// of the state of of each contract, ordered by their contract ID.
     ///
     /// It also doubles as the ID of a commit - the commit root.
-    pub fn root(&self) -> [u8; 32] {
-        self.inner.contract_session.root().into()
+    pub fn root(&self) -> CommitRoot {
+        self.inner.contract_session.root()
     }
 
     /// Returns an iterator over the pages (and their indices) of a contract's
@@ -723,11 +723,10 @@ impl Session {
 
     /// Commits the given session to disk, consuming the session and returning
     /// its state root.
-    pub fn commit(self) -> Result<[u8; 32], Error> {
+    pub fn commit(self) -> Result<CommitRoot, Error> {
         self.inner
             .contract_session
             .commit()
-            .map(Into::into)
             .map_err(|err| PersistenceError(Arc::new(err)))
     }
 
@@ -879,7 +878,7 @@ impl CallReceipt<Vec<u8>> {
 #[derive(Debug, Default)]
 pub struct SessionData {
     data: BTreeMap<Cow<'static, str>, Vec<u8>>,
-    pub base: Option<[u8; 32]>,
+    pub base: Option<CommitRoot>,
 }
 
 impl SessionData {
@@ -903,7 +902,7 @@ impl From<SessionDataBuilder> for SessionData {
 
 pub struct SessionDataBuilder {
     data: BTreeMap<Cow<'static, str>, Vec<u8>>,
-    base: Option<[u8; 32]>,
+    base: Option<CommitRoot>,
 }
 
 impl SessionDataBuilder {
@@ -917,7 +916,7 @@ impl SessionDataBuilder {
         Ok(self)
     }
 
-    pub fn base(mut self, base: [u8; 32]) -> Self {
+    pub fn base(mut self, base: CommitRoot) -> Self {
         self.base = Some(base);
         self
     }

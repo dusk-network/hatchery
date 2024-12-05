@@ -5,7 +5,8 @@
 // Copyright (c) DUSK NETWORK. All rights reserved.
 
 use piecrust::{
-    contract_bytecode, ContractData, Error, Session, SessionData, VM,
+    contract_bytecode, CommitRoot, ContractData, Error, Session, SessionData,
+    VM,
 };
 use piecrust_uplink::ContractId;
 use std::thread;
@@ -297,7 +298,7 @@ fn increment_counter_and_commit(
     mut session: Session,
     id: ContractId,
     count: usize,
-) -> Result<[u8; 32], Error> {
+) -> Result<CommitRoot, Error> {
     for _ in 0..count {
         session.call::<(), ()>(id, "increment", &(), LIMIT)?;
     }
@@ -338,7 +339,7 @@ fn concurrent_sessions() -> Result<(), Error> {
         }));
     }
 
-    let mut roots: Vec<[u8; 32]> = threads
+    let mut roots: Vec<CommitRoot> = threads
         .into_iter()
         .map(|handle| {
             handle.join().unwrap().expect("Committing should succeed")
@@ -375,7 +376,7 @@ fn concurrent_sessions() -> Result<(), Error> {
         vm.delete_commit(root)?;
     }
 
-    let mut roots: Vec<[u8; 32]> = threads
+    let mut roots: Vec<CommitRoot> = threads
         .into_iter()
         .map(|handle| {
             handle.join().unwrap().expect("Committing should succeed")

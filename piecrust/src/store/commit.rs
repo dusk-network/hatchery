@@ -4,8 +4,8 @@
 //
 // Copyright (c) DUSK NETWORK. All rights reserved.
 
-use crate::store::tree::{ContractIndexElement, Hash, NewContractIndex};
-use crate::store::CommitStore;
+use crate::store::tree::{ContractIndexElement, NewContractIndex};
+use crate::store::{CommitRoot, CommitStore};
 use piecrust_uplink::ContractId;
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +17,7 @@ impl Hulk {
         index: &NewContractIndex,
         contract_id: ContractId,
         commit_store: Option<Arc<Mutex<CommitStore>>>,
-        base: Option<Hash>,
+        base: Option<CommitRoot>,
     ) -> Option<*const ContractIndexElement> {
         if let Some(e) = index.get(&contract_id) {
             return Some(e);
@@ -39,7 +39,7 @@ impl Hulk {
         index: &mut NewContractIndex,
         contract_id: ContractId,
         commit_store: Option<Arc<Mutex<CommitStore>>>,
-        base: Option<Hash>,
+        base: Option<CommitRoot>,
     ) -> Option<*mut ContractIndexElement> {
         if let Some(e) = index.get_mut(&contract_id) {
             return Some(e);

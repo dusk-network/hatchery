@@ -15,7 +15,7 @@ use dusk_wasmtime::Engine;
 use piecrust_uplink::ContractId;
 
 use crate::contract::ContractMetadata;
-use crate::store::tree::{Hash, PageOpening};
+use crate::store::tree::{CommitRoot, PageOpening};
 use crate::store::{
     base_from_path, Bytecode, Call, Commit, CommitStore, Memory, Metadata,
     Module, BASE_FILE, BYTECODE_DIR, ELEMENT_FILE, MAIN_DIR, MEMORY_DIR,
@@ -90,7 +90,7 @@ impl ContractSession {
     /// calling this function.
     ///
     /// [`contract`]: ContractSession::contract
-    pub fn root(&self) -> Hash {
+    pub fn root(&self) -> CommitRoot {
         tracing::trace!("root called commit cloning");
         let mut commit = self
             .base
@@ -103,7 +103,7 @@ impl ContractSession {
         let root = commit.root();
         tracing::trace!("root call finished");
 
-        *root
+        root
     }
 
     /// Returns an iterator through all the pages of a contract, together with a
@@ -147,7 +147,7 @@ impl ContractSession {
     /// `ContractSession` to drop.
     ///
     /// [`contract`]: ContractSession::contract
-    pub fn commit(&mut self) -> io::Result<Hash> {
+    pub fn commit(&mut self) -> io::Result<CommitRoot> {
         tracing::trace!("commit started");
         let (replier, receiver) = mpsc::sync_channel(1);
 
@@ -176,7 +176,7 @@ impl ContractSession {
     /// Progresses recursively via bases of commits.
     pub fn find_page(
         page_index: usize,
-        commit: Option<Hash>,
+        commit: Option<CommitRoot>,
         memory_path: impl AsRef<Path>,
         main_path: impl AsRef<Path>,
     ) -> Option<PathBuf> {
@@ -210,7 +210,7 @@ impl ContractSession {
     /// Requires a contract's leaf path and a main state path.
     /// Progresses recursively via bases of commits.
     pub fn find_element(
-        commit: Option<Hash>,
+        commit: Option<CommitRoot>,
         leaf_path: impl AsRef<Path>,
         main_path: impl AsRef<Path>,
         depth: u32,
@@ -259,7 +259,7 @@ impl ContractSession {
         &mut self,
         contract: ContractId,
     ) -> io::Result<Option<ContractDataEntry>> {
-        let commit_id = self.base.as_ref().map(|commit| *commit.root());
+        let commit_id = self.base.as_ref().map(|commit| commit.root());
         match self.contracts.entry(contract) {
             Vacant(entry) => match &self.base {
                 None => Ok(None),
@@ -442,7 +442,7 @@ impl Drop for ContractSession {
     fn drop(&mut self) {
         if let Some(base) = self.base.take() {
             let root = base.root();
-            let _ = self.call.send(Call::SessionDrop(*root));
+            let _ = self.call.send(Call::SessionDrop(root));
         }
     }
 }

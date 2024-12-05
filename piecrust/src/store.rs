@@ -14,7 +14,6 @@ mod module;
 mod session;
 mod tree;
 
-use std::cell::Ref;
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,7 +39,7 @@ pub use memory::{Memory, PAGE_SIZE};
 pub use metadata::Metadata;
 pub use module::Module;
 pub use session::ContractSession;
-pub use tree::PageOpening;
+pub use tree::{CommitRoot, PageOpening};
 
 const BYTECODE_DIR: &str = "bytecode";
 const MEMORY_DIR: &str = "memory";
@@ -75,7 +74,7 @@ impl Debug for ContractStore {
 
 #[derive(Debug)]
 pub struct CommitStore {
-    commits: BTreeMap<Hash, Commit>,
+    commits: BTreeMap<CommitRoot, Commit>,
     main_index: NewContractIndex,
 }
 
@@ -87,19 +86,19 @@ impl CommitStore {
         }
     }
 
-    pub fn insert_commit(&mut self, hash: Hash, commit: Commit) {
+    pub fn insert_commit(&mut self, hash: CommitRoot, commit: Commit) {
         self.commits.insert(hash, commit);
     }
 
-    pub fn get_commit(&self, hash: &Hash) -> Option<&Commit> {
+    pub fn get_commit(&self, hash: &CommitRoot) -> Option<&Commit> {
         self.commits.get(hash)
     }
 
     pub fn get_element_and_base(
         &self,
-        hash: &Hash,
+        hash: &CommitRoot,
         contract_id: &ContractId,
-    ) -> (Option<*const ContractIndexElement>, Option<Hash>) {
+    ) -> (Option<*const ContractIndexElement>, Option<CommitRoot>) {
         match self.commits.get(hash) {
             Some(commit) => {
                 let e = commit.index.get(contract_id);
@@ -114,9 +113,9 @@ impl CommitStore {
 
     pub fn get_element_and_base_mut(
         &mut self,
-        hash: &Hash,
+        hash: &CommitRoot,
         contract_id: &ContractId,
-    ) -> (Option<*mut ContractIndexElement>, Option<Hash>) {
+    ) -> (Option<*mut ContractIndexElement>, Option<CommitRoot>) {
         match self.commits.get_mut(hash) {
             Some(commit) => {
                 let e = commit.index.get_mut(contract_id);
@@ -129,15 +128,15 @@ impl CommitStore {
         }
     }
 
-    pub fn contains_key(&self, hash: &Hash) -> bool {
+    pub fn contains_key(&self, hash: &CommitRoot) -> bool {
         self.commits.contains_key(hash)
     }
 
-    pub fn keys(&self) -> Keys<'_, Hash, Commit> {
+    pub fn keys(&self) -> Keys<'_, CommitRoot, Commit> {
         self.commits.keys()
     }
 
-    pub fn remove_commit(&mut self, hash: &Hash) {
+    pub fn remove_commit(&mut self, hash: &CommitRoot) {
         if let Some(commit) = self.commits.remove(hash) {
             commit.index.move_into(&mut self.main_index);
         }
@@ -201,14 +200,17 @@ impl ContractStore {
     /// Create a new [`ContractSession`] with the given `base` commit.
     ///
     /// Errors if the given base commit does not exist in the store.
-    pub fn session(&self, base: Hash) -> io::Result<ContractSession> {
+    pub fn session(&self, base: CommitRoot) -> io::Result<ContractSession> {
         tracing::trace!("session creation started");
         let base_commit_hash = self
             .call_with_replier(|replier| Call::CommitHold { base, replier })
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("No such base commit: {}", hex::encode(base)),
+                    format!(
+                        "No such base commit: {}",
+                        hex::encode(base.as_bytes())
+                    ),
                 )
             })?;
 
@@ -227,7 +229,7 @@ impl ContractStore {
     }
 
     /// Returns the roots of the commits that are currently in the store.
-    pub fn commits(&self) -> Vec<Hash> {
+    pub fn commits(&self) -> Vec<CommitRoot> {
         self.call_with_replier(|replier| Call::GetCommits { replier })
     }
 
@@ -238,14 +240,14 @@ impl ContractStore {
     /// using the commit has dropped.
     ///
     /// It will block until the operation is completed.
-    pub fn delete_commit(&self, commit: Hash) -> io::Result<()> {
+    pub fn delete_commit(&self, commit: CommitRoot) -> io::Result<()> {
         self.call_with_replier(|replier| Call::CommitDelete { commit, replier })
     }
 
     /// Finalizes commit
     ///
     /// The commit will become a "current" commit
-    pub fn finalize_commit(&self, commit: Hash) -> io::Result<()> {
+    pub fn finalize_commit(&self, commit: CommitRoot) -> io::Result<()> {
         self.call_with_replier(|replier| Call::CommitFinalize {
             commit,
             replier,
@@ -285,7 +287,7 @@ impl ContractStore {
             .expect("The sender should never be dropped without responding")
     }
 
-    fn session_with_base(&self, base: Option<Hash>) -> ContractSession {
+    fn session_with_base(&self, base: Option<CommitRoot>) -> ContractSession {
         let base_commit = base.and_then(|hash| {
             self.commit_store.lock().unwrap().get_commit(&hash).cloned()
         });
@@ -323,7 +325,7 @@ fn read_all_commits<P: AsRef<Path>>(
             let commit =
                 read_commit(engine, entry.path(), commit_store.clone())?;
             tracing::trace!("before read_commit");
-            let root = *commit.root();
+            let root = commit.root();
             commit_store.lock().unwrap().insert_commit(root, commit);
         }
     }
@@ -376,12 +378,12 @@ fn tree_pos_path_main<P: AsRef<Path>, S: AsRef<str>>(
     Ok(dir.join(TREE_POS_OPT_FILE))
 }
 
-fn commit_id_to_hash<S: AsRef<str>>(commit_id: S) -> Hash {
+fn commit_id_to_hash<S: AsRef<str>>(commit_id: S) -> CommitRoot {
     let hash: [u8; 32] = hex::decode(commit_id.as_ref())
         .expect("Hex decoding of commit id string should succeed")
         .try_into()
         .expect("Commit id string conversion should succeed");
-    Hash::from(hash)
+    CommitRoot::from_bytes(hash)
 }
 
 fn contract_id_from_hex<S: AsRef<str>>(contract_id: S) -> ContractId {
@@ -511,7 +513,7 @@ fn commit_from_dir<P: AsRef<Path>>(
 fn index_merkle_from_path(
     main_path: impl AsRef<Path>,
     leaf_dir: impl AsRef<Path>,
-    maybe_commit_id: &Option<Hash>,
+    maybe_commit_id: &Option<CommitRoot>,
     commit_store: Arc<Mutex<CommitStore>>,
     maybe_tree_pos: Option<&TreePos>,
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
@@ -616,15 +618,15 @@ fn tree_pos_from_path(
 pub(crate) struct Commit {
     index: NewContractIndex,
     contracts_merkle: ContractsMerkle,
-    maybe_hash: Option<Hash>,
+    maybe_hash: Option<CommitRoot>,
     commit_store: Option<Arc<Mutex<CommitStore>>>,
-    base: Option<Hash>,
+    base: Option<CommitRoot>,
 }
 
 impl Commit {
     pub fn new(
         commit_store: &Arc<Mutex<CommitStore>>,
-        maybe_base: Option<Hash>,
+        maybe_base: Option<CommitRoot>,
     ) -> Self {
         Self {
             index: NewContractIndex::new(),
@@ -707,7 +709,7 @@ impl Commit {
             );
         }
 
-        let root = *element.tree().root();
+        let root = element.tree().root();
         let pos = position_from_contract(&contract_id);
         let internal_pos = contracts_merkle.insert(pos, root);
         element.set_hash(Some(root));
@@ -719,11 +721,11 @@ impl Commit {
         self.insert(contract, memory);
     }
 
-    pub fn root(&self) -> Ref<Hash> {
+    pub fn root(&self) -> CommitRoot {
         tracing::trace!("calculating root started");
-        let ret = self.contracts_merkle.root();
+        let ret = *self.contracts_merkle.root();
         tracing::trace!("calculating root finished");
-        ret
+        CommitRoot::from(ret)
     }
 
     pub fn index_get(
@@ -760,24 +762,24 @@ pub(crate) enum Call {
     Commit {
         contracts: BTreeMap<ContractId, ContractDataEntry>,
         base: Option<Commit>,
-        replier: mpsc::SyncSender<io::Result<Hash>>,
+        replier: mpsc::SyncSender<io::Result<CommitRoot>>,
     },
     GetCommits {
-        replier: mpsc::SyncSender<Vec<Hash>>,
+        replier: mpsc::SyncSender<Vec<CommitRoot>>,
     },
     CommitDelete {
-        commit: Hash,
+        commit: CommitRoot,
         replier: mpsc::SyncSender<io::Result<()>>,
     },
     CommitFinalize {
-        commit: Hash,
+        commit: CommitRoot,
         replier: mpsc::SyncSender<io::Result<()>>,
     },
     CommitHold {
-        base: Hash,
-        replier: mpsc::SyncSender<Option<Hash>>,
+        base: CommitRoot,
+        replier: mpsc::SyncSender<Option<CommitRoot>>,
     },
-    SessionDrop(Hash),
+    SessionDrop(CommitRoot),
 }
 
 fn sync_loop<P: AsRef<Path>>(
@@ -955,11 +957,11 @@ fn write_commit<P: AsRef<Path>>(
     commit_store: Arc<Mutex<CommitStore>>,
     base: Option<Commit>,
     commit_contracts: BTreeMap<ContractId, ContractDataEntry>,
-) -> io::Result<Hash> {
+) -> io::Result<CommitRoot> {
     let root_dir = root_dir.as_ref();
 
     let base_info = BaseInfo {
-        maybe_base: base.as_ref().map(|base| *base.root()),
+        maybe_base: base.as_ref().map(|base| base.root()),
         ..Default::default()
     };
 
@@ -988,8 +990,8 @@ fn write_commit<P: AsRef<Path>>(
         }
     }
 
-    let root = *commit.root();
-    let root_hex = hex::encode(root);
+    let root = commit.root();
+    let root_hex = hex::encode(root.as_bytes());
     commit.maybe_hash = Some(root);
     commit.base = base_info.maybe_base;
 
@@ -1135,9 +1137,9 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
 /// Delete the given commit's directory.
 fn delete_commit_dir<P: AsRef<Path>>(
     root_dir: P,
-    root: Hash,
+    root: CommitRoot,
 ) -> io::Result<()> {
-    let root = hex::encode(root);
+    let root = hex::encode(root.as_bytes());
     let root_main_dir = root_dir.as_ref().join(MAIN_DIR);
     let commit_dir = root_main_dir.join(&root);
     if commit_dir.exists() {
@@ -1161,12 +1163,12 @@ fn delete_commit_dir<P: AsRef<Path>>(
 
 /// Finalize commit
 fn finalize_commit<P: AsRef<Path>>(
-    root: Hash,
+    root: CommitRoot,
     root_dir: P,
     _commit: &Commit,
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
-    let root = hex::encode(root);
+    let root = hex::encode(root.as_bytes());
     let commit_path = main_dir.join(&root);
     let base_info_path = commit_path.join(BASE_FILE);
     let tree_pos_path = commit_path.join(TREE_POS_FILE);

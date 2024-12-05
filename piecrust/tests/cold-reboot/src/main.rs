@@ -9,7 +9,7 @@ extern crate core;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use piecrust::{ContractData, ContractId, SessionData, VM};
+use piecrust::{CommitRoot, ContractData, ContractId, SessionData, VM};
 
 const COUNTER_ID: ContractId = {
     let mut bytes = [0u8; 32];
@@ -35,7 +35,7 @@ fn initialize_counter<P: AsRef<Path>>(
     session.call::<_, ()>(COUNTER_ID, "increment", &(), u64::MAX)?;
 
     let commit_root = session.commit()?;
-    fs::write(commit_id_file_path, commit_root)
+    fs::write(commit_id_file_path, commit_root.as_bytes())
         .expect("writing commit root should succeed");
 
     Ok(())
@@ -50,9 +50,10 @@ fn confirm_counter<P: AsRef<Path>>(
     let commit_root_bytes = fs::read(commit_id_file_path)
         .expect("Reading commit root should succeed");
     commit_root.copy_from_slice(&commit_root_bytes);
+    let root = CommitRoot::from_bytes(commit_root);
 
     let mut session = vm
-        .session(SessionData::builder().base(commit_root))
+        .session(SessionData::builder().base(root))
         .expect("Instantiating session from given root should succeed");
 
     assert_eq!(

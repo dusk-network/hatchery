@@ -20,7 +20,7 @@ use tempfile::tempdir;
 
 use crate::config::BYTE_STORE_COST;
 use crate::session::{Session, SessionData};
-use crate::store::ContractStore;
+use crate::store::{CommitRoot, ContractStore};
 use crate::Error::{self, PersistenceError};
 
 fn config() -> Config {
@@ -219,7 +219,7 @@ impl VM {
         let contract_session = match data.base {
             Some(base) => self
                 .store
-                .session(base.into())
+                .session(base)
                 .map_err(|err| PersistenceError(Arc::new(err)))?,
             _ => self.store.genesis_session(),
         };
@@ -232,21 +232,21 @@ impl VM {
     }
 
     /// Return all existing commits.
-    pub fn commits(&self) -> Vec<[u8; 32]> {
-        self.store.commits().into_iter().map(Into::into).collect()
+    pub fn commits(&self) -> Vec<CommitRoot> {
+        self.store.commits().into_iter().collect()
     }
 
     /// Deletes the given commit from disk.
-    pub fn delete_commit(&self, root: [u8; 32]) -> Result<(), Error> {
+    pub fn delete_commit(&self, root: CommitRoot) -> Result<(), Error> {
         self.store
-            .delete_commit(root.into())
+            .delete_commit(root)
             .map_err(|err| PersistenceError(Arc::new(err)))
     }
 
     /// Finalizes the given commit on disk.
-    pub fn finalize_commit(&self, root: [u8; 32]) -> Result<(), Error> {
+    pub fn finalize_commit(&self, root: CommitRoot) -> Result<(), Error> {
         self.store
-            .finalize_commit(root.into())
+            .finalize_commit(root)
             .map_err(|err| PersistenceError(Arc::new(err)))
     }
 

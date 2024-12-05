@@ -30,6 +30,66 @@ type PageTree64 = dusk_merkle::Tree<Hash, P64_HEIGHT, P64_ARITY>;
 const C_HEIGHT: usize = 32;
 const C_ARITY: usize = 2;
 
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Archive,
+    Deserialize,
+    Serialize,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+)]
+#[archive_attr(derive(CheckBytes))]
+pub struct CommitRoot(Hash);
+
+impl CommitRoot {
+    pub fn from(h: Hash) -> Self {
+        Self(h)
+    }
+    pub fn from_bytes(a: [u8; 32]) -> Self {
+        Self(Hash::from(a))
+    }
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        self.0.as_bytes()
+    }
+}
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Archive,
+    Deserialize,
+    Serialize,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+)]
+#[archive_attr(derive(CheckBytes))]
+pub struct PageRoot(Hash);
+
+impl PageRoot {
+    pub fn from(h: Hash) -> Self {
+        Self(h)
+    }
+    pub fn from_bytes(a: [u8; 32]) -> Self {
+        Self(Hash::from(a))
+    }
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        self.0.as_bytes()
+    }
+}
+
+impl From<PageRoot> for Hash {
+    fn from(val: PageRoot) -> Self {
+        val.0
+    }
+}
+
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub enum PageTree {
@@ -53,10 +113,10 @@ impl PageTree {
         }
     }
 
-    pub fn root(&self) -> Ref<Hash> {
+    pub fn root(&self) -> PageRoot {
         match self {
-            Self::Wasm32(tree) => tree.root(),
-            Self::Wasm64(tree) => tree.root(),
+            Self::Wasm32(tree) => PageRoot(*tree.root()),
+            Self::Wasm64(tree) => PageRoot(*tree.root()),
         }
     }
 
@@ -112,7 +172,7 @@ impl Default for ContractsMerkle {
 }
 
 impl ContractsMerkle {
-    pub fn insert(&mut self, pos: u64, hash: Hash) -> u64 {
+    pub fn insert(&mut self, pos: u64, hash: PageRoot) -> u64 {
         let new_pos = match self.dict.get(&pos) {
             None => {
                 let new_pos = (self.dict.len() + 1) as u64;
@@ -126,7 +186,12 @@ impl ContractsMerkle {
         new_pos
     }
 
-    pub fn insert_with_int_pos(&mut self, pos: u64, int_pos: u64, hash: Hash) {
+    pub fn insert_with_int_pos(
+        &mut self,
+        pos: u64,
+        int_pos: u64,
+        hash: PageRoot,
+    ) {
         self.dict.insert(pos, int_pos);
         self.inner_tree.insert(int_pos, hash);
         self.tree_pos.insert(int_pos as u32, (hash, pos));
@@ -156,24 +221,24 @@ pub struct ContractIndex {
     pub tree: Tree,
     pub contracts: BTreeMap<ContractId, ContractIndexElement>,
     pub contract_hints: Vec<ContractId>,
-    pub maybe_base: Option<Hash>,
+    pub maybe_base: Option<CommitRoot>,
 }
 
 #[derive(Debug, Clone, Default, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct BaseInfo {
     pub contract_hints: Vec<ContractId>,
-    pub maybe_base: Option<Hash>,
+    pub maybe_base: Option<CommitRoot>,
 }
 
 #[derive(Debug, Clone, Default, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct TreePos {
-    tree_pos: BTreeMap<u32, (Hash, u64)>,
+    tree_pos: BTreeMap<u32, (PageRoot, u64)>,
 }
 
 impl TreePos {
-    pub fn insert(&mut self, k: u32, v: (Hash, u64)) {
+    pub fn insert(&mut self, k: u32, v: (PageRoot, u64)) {
         self.tree_pos.insert(k, v);
     }
 
@@ -227,7 +292,7 @@ impl TreePos {
             if Self::is_eof(&res) {
                 break;
             }
-            let hash = Hash::from(res?);
+            let hash = PageRoot::from_bytes(res?);
 
             let res = Self::read_bytes(r);
             if Self::is_eof(&res) {
@@ -239,7 +304,7 @@ impl TreePos {
         Ok(slf)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&u32, &(Hash, u64))> {
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &(PageRoot, u64))> {
         self.tree_pos.iter()
     }
 }
@@ -250,7 +315,7 @@ pub struct ContractIndexElement {
     tree: PageTree,
     len: usize,
     page_indices: BTreeSet<usize>,
-    hash: Option<Hash>,
+    hash: Option<PageRoot>,
     int_pos: Option<u64>,
 }
 
@@ -283,11 +348,11 @@ impl ContractIndexElement {
         self.len
     }
 
-    pub fn set_hash(&mut self, hash: Option<Hash>) {
+    pub fn set_hash(&mut self, hash: Option<PageRoot>) {
         self.hash = hash;
     }
 
-    pub fn hash(&self) -> Option<Hash> {
+    pub fn hash(&self) -> Option<PageRoot> {
         self.hash
     }
 
@@ -562,7 +627,7 @@ mod tests {
         const TEST_SIZE: u32 = 262144;
         const ELEM_SIZE: usize = 4 + 32 + 4;
         let mut marshalled = TreePos::default();
-        let h = Hash::from([1u8; 32]);
+        let h = PageRoot::from_bytes([1u8; 32]);
         for i in 0..TEST_SIZE {
             marshalled.insert(i, (h, i as u64));
         }
