@@ -25,7 +25,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::{fs, io, thread};
 
 use dusk_wasmtime::Engine;
-use piecrust_uplink::ContractId;
+use piecrust_uplink::{CommitRoot, ContractId};
 use session::ContractDataEntry;
 use tree::{Hash, NewContractIndex};
 
@@ -39,7 +39,7 @@ pub use memory::{Memory, PAGE_SIZE};
 pub use metadata::Metadata;
 pub use module::Module;
 pub use session::ContractSession;
-pub use tree::{CommitRoot, PageOpening};
+pub use tree::PageOpening;
 
 const BYTECODE_DIR: &str = "bytecode";
 const MEMORY_DIR: &str = "memory";
@@ -725,7 +725,7 @@ impl Commit {
         tracing::trace!("calculating root started");
         let ret = *self.contracts_merkle.root();
         tracing::trace!("calculating root finished");
-        CommitRoot::from(ret)
+        CommitRoot::from_bytes(*ret.as_bytes())
     }
 
     pub fn index_get(

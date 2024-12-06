@@ -10,7 +10,7 @@ use std::{
 };
 
 use bytecheck::CheckBytes;
-use piecrust_uplink::ContractId;
+use piecrust_uplink::{CommitRoot, ContractId};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::io::{self, ErrorKind, Read, Write};
 
@@ -29,33 +29,6 @@ type PageTree64 = dusk_merkle::Tree<Hash, P64_HEIGHT, P64_ARITY>;
 // This means we have max `2^32` contracts
 const C_HEIGHT: usize = 32;
 const C_ARITY: usize = 2;
-
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    Archive,
-    Deserialize,
-    Serialize,
-    PartialOrd,
-    Ord,
-    PartialEq,
-    Eq,
-)]
-#[archive_attr(derive(CheckBytes))]
-pub struct CommitRoot(Hash);
-
-impl CommitRoot {
-    pub fn from(h: Hash) -> Self {
-        Self(h)
-    }
-    pub fn from_bytes(a: [u8; 32]) -> Self {
-        Self(Hash::from(a))
-    }
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        self.0.as_bytes()
-    }
-}
 
 #[derive(
     Debug,

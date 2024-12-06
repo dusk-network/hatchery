@@ -5,8 +5,8 @@
 // Copyright (c) DUSK NETWORK. All rights reserved.
 
 use crate::store::tree::{ContractIndexElement, NewContractIndex};
-use crate::store::{CommitRoot, CommitStore};
-use piecrust_uplink::ContractId;
+use crate::store::CommitStore;
+use piecrust_uplink::{CommitRoot, ContractId};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]

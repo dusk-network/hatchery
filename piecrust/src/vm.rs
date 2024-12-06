@@ -16,11 +16,12 @@ use dusk_wasmtime::{
     Config, Engine, ModuleVersionStrategy, OperatorCost, OptLevel, Strategy,
     WasmBacktraceDetails,
 };
+use piecrust_uplink::CommitRoot;
 use tempfile::tempdir;
 
 use crate::config::BYTE_STORE_COST;
 use crate::session::{Session, SessionData};
-use crate::store::{CommitRoot, ContractStore};
+use crate::store::ContractStore;
 use crate::Error::{self, PersistenceError};
 
 fn config() -> Config {

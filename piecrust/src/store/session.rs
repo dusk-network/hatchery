@@ -12,10 +12,10 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::{io, mem};
 
 use dusk_wasmtime::Engine;
-use piecrust_uplink::ContractId;
+use piecrust_uplink::{CommitRoot, ContractId};
 
 use crate::contract::ContractMetadata;
-use crate::store::tree::{CommitRoot, PageOpening};
+use crate::store::tree::PageOpening;
 use crate::store::{
     base_from_path, Bytecode, Call, Commit, CommitStore, Memory, Metadata,
     Module, BASE_FILE, BYTECODE_DIR, ELEMENT_FILE, MAIN_DIR, MEMORY_DIR,

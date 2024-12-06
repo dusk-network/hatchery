@@ -13,7 +13,8 @@ use std::sync::{mpsc, Arc};
 use bytecheck::CheckBytes;
 use dusk_wasmtime::{Engine, LinearMemory, MemoryCreator, MemoryType};
 use piecrust_uplink::{
-    ContractId, Event, ARGBUF_LEN, CONTRACT_ID_BYTES, SCRATCH_BUF_BYTES,
+    CommitRoot, ContractId, Event, ARGBUF_LEN, CONTRACT_ID_BYTES,
+    SCRATCH_BUF_BYTES,
 };
 use rkyv::ser::serializers::{
     BufferScratch, BufferSerializer, CompositeSerializer,
@@ -28,7 +29,7 @@ use crate::call_tree::{CallTree, CallTreeElem};
 use crate::contract::{ContractData, ContractMetadata, WrappedContract};
 use crate::error::Error::{self, InitalizationError, PersistenceError};
 use crate::instance::WrappedInstance;
-use crate::store::{CommitRoot, ContractSession, PageOpening, PAGE_SIZE};
+use crate::store::{ContractSession, PageOpening, PAGE_SIZE};
 use crate::types::StandardBufSerializer;
 use crate::vm::{HostQueries, HostQuery};
 
