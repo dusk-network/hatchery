@@ -127,3 +127,27 @@ impl core::fmt::Display for ContractId {
         Ok(())
     }
 }
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Archive,
+    Deserialize,
+    Serialize,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+)]
+#[archive_attr(derive(CheckBytes))]
+pub struct CommitRoot([u8; 32]);
+
+impl CommitRoot {
+    pub fn from_bytes(a: [u8; 32]) -> Self {
+        Self(a)
+    }
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
