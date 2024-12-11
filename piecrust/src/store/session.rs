@@ -96,7 +96,7 @@ impl ContractSession {
             .base
             .as_ref()
             .map(|c| c.fast_clone(&mut self.contracts.keys()))
-            .unwrap_or(Commit::new(&self.commit_store, None));
+            .unwrap_or(Commit::new(&self.commit_store, None, 0));
         for (contract, entry) in &self.contracts {
             commit.insert(*contract, &entry.memory);
         }
@@ -113,10 +113,11 @@ impl ContractSession {
         contract: ContractId,
     ) -> Option<impl Iterator<Item = (usize, &[u8], PageOpening)>> {
         tracing::trace!("memory_pages called commit cloning");
-        let mut commit = self
-            .base
-            .clone()
-            .unwrap_or(Commit::new(&self.commit_store, None));
+        let mut commit = self.base.clone().unwrap_or(Commit::new(
+            &self.commit_store,
+            None,
+            0,
+        ));
         for (contract, entry) in &self.contracts {
             commit.insert(*contract, &entry.memory);
         }

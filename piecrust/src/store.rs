@@ -492,11 +492,12 @@ fn commit_from_dir<P: AsRef<Path>>(
         }
     }
 
-    let base = if let Some(ref hash_hex) = commit_id {
+    let (base, level) = if let Some(ref hash_hex) = commit_id {
         let base_info_path = main_dir.join(hash_hex).join(BASE_FILE);
-        base_from_path(base_info_path)?.maybe_base
+        let base_info = base_from_path(base_info_path)?;
+        (base_info.maybe_base, base_info.level)
     } else {
-        None
+        (None, 0)
     };
 
     Ok(Commit {
@@ -505,6 +506,7 @@ fn commit_from_dir<P: AsRef<Path>>(
         maybe_hash,
         commit_store: Some(commit_store),
         base,
+        level,
     })
 }
 
@@ -549,6 +551,13 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
+                // if let Some(h) = element.hash() {
+                //     merkle.insert_with_int_pos(
+                //         position_from_contract(&contract_id),
+                //         element.int_pos().expect("int pos should be
+                // present"),         h,
+                //     );
+                // }
                 if element_depth != u32::MAX {
                     index.insert_contract_index(&contract_id, element);
                 } else {
@@ -619,12 +628,14 @@ pub(crate) struct Commit {
     maybe_hash: Option<Hash>,
     commit_store: Option<Arc<Mutex<CommitStore>>>,
     base: Option<Hash>,
+    level: u64,
 }
 
 impl Commit {
     pub fn new(
         commit_store: &Arc<Mutex<CommitStore>>,
         maybe_base: Option<Hash>,
+        level: u64,
     ) -> Self {
         Self {
             index: NewContractIndex::new(),
@@ -632,6 +643,7 @@ impl Commit {
             maybe_hash: None,
             commit_store: Some(commit_store.clone()),
             base: maybe_base,
+            level,
         }
     }
 
@@ -652,6 +664,7 @@ impl Commit {
             maybe_hash: self.maybe_hash,
             commit_store: self.commit_store.clone(),
             base: self.base,
+            level: self.level,
         }
     }
 
@@ -960,6 +973,7 @@ fn write_commit<P: AsRef<Path>>(
 
     let base_info = BaseInfo {
         maybe_base: base.as_ref().map(|base| *base.root()),
+        level: base.as_ref().map(|base| base.level + 1).unwrap_or(0),
         ..Default::default()
     };
 
@@ -978,8 +992,11 @@ fn write_commit<P: AsRef<Path>>(
     //     maybe_hash: base.as_ref().and_then(|base| base.maybe_hash),
     // };
 
-    let mut commit =
-        base.unwrap_or(Commit::new(&commit_store, base_info.maybe_base));
+    let mut commit = base.unwrap_or(Commit::new(
+        &commit_store,
+        base_info.maybe_base,
+        base_info.level,
+    ));
     for (contract_id, contract_data) in &commit_contracts {
         if contract_data.is_new {
             commit.remove_and_insert(*contract_id, &contract_data.memory);
@@ -1163,11 +1180,11 @@ fn delete_commit_dir<P: AsRef<Path>>(
 fn finalize_commit<P: AsRef<Path>>(
     root: Hash,
     root_dir: P,
-    _commit: &Commit,
+    commit: &Commit,
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
-    let root = hex::encode(root);
-    let commit_path = main_dir.join(&root);
+    let root_str = hex::encode(root);
+    let commit_path = main_dir.join(&root_str);
     let base_info_path = commit_path.join(BASE_FILE);
     let tree_pos_path = commit_path.join(TREE_POS_FILE);
     let tree_pos_opt_path = commit_path.join(TREE_POS_OPT_FILE);
@@ -1175,22 +1192,37 @@ fn finalize_commit<P: AsRef<Path>>(
     for contract_hint in base_info.contract_hints {
         let contract_hex = hex::encode(contract_hint);
         // MEMORY
-        let src_path =
-            main_dir.join(MEMORY_DIR).join(&contract_hex).join(&root);
+        let src_path = main_dir
+            .join(MEMORY_DIR)
+            .join(&contract_hex)
+            .join(&root_str);
         let dst_path = main_dir.join(MEMORY_DIR).join(&contract_hex);
         for entry in fs::read_dir(&src_path)? {
             let filename = entry?.file_name();
             let src_file_path = src_path.join(&filename);
             let dst_file_path = dst_path.join(&filename);
             if src_file_path.is_file() {
+                if dst_file_path.is_file() {
+                    // if destination exists, we need to create a copy of it at
+                    // commit's level
+                    let level_str = format!("{}", commit.level);
+                    let level_dir = main_dir.join(MEMORY_DIR).join(level_str);
+                    fs::create_dir_all(&level_dir)?;
+                    let copy_dst_dir = level_dir.join(&contract_hex); // .join(&root_str); // this is a new "main", we don't want
+                                                                      // it to be commit specific
+                    fs::create_dir_all(&copy_dst_dir)?;
+                    let copy_dst = copy_dst_dir.join(&filename);
+                    fs::copy(&dst_file_path, &copy_dst)?;
+                    println!("xcopied {:?} to {:?}", &dst_file_path, &copy_dst);
+                }
                 fs::rename(src_file_path, dst_file_path)?;
             }
         }
         fs::remove_dir(&src_path)?;
         // LEAF
         let src_leaf_path =
-            main_dir.join(LEAF_DIR).join(&contract_hex).join(&root);
-        let dst_leaf_path = main_dir.join(LEAF_DIR).join(contract_hex);
+            main_dir.join(LEAF_DIR).join(&contract_hex).join(&root_str);
+        let dst_leaf_path = main_dir.join(LEAF_DIR).join(&contract_hex);
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
         let dst_leaf_file_path = dst_leaf_path.join(ELEMENT_FILE);
         if src_leaf_file_path.is_file() {
