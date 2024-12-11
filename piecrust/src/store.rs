@@ -500,14 +500,14 @@ fn commit_from_dir<P: AsRef<Path>>(
         (None, 0)
     };
 
-    Ok(Commit {
+    Ok(Commit::new(
         index,
         contracts_merkle,
         maybe_hash,
-        commit_store: Some(commit_store),
+        Some(commit_store),
         base,
         level,
-    })
+    ))
 }
 
 fn index_merkle_from_path(
@@ -632,7 +632,7 @@ pub(crate) struct Commit {
 }
 
 impl Commit {
-    pub fn new(
+    pub fn from(
         commit_store: &Arc<Mutex<CommitStore>>,
         maybe_base: Option<Hash>,
         level: u64,
@@ -643,6 +643,24 @@ impl Commit {
             maybe_hash: None,
             commit_store: Some(commit_store.clone()),
             base: maybe_base,
+            level,
+        }
+    }
+
+    pub fn new(
+        index: NewContractIndex,
+        contracts_merkle: ContractsMerkle,
+        maybe_hash: Option<Hash>,
+        commit_store: Option<Arc<Mutex<CommitStore>>>,
+        base: Option<Hash>,
+        level: u64,
+    ) -> Self {
+        Self {
+            index,
+            contracts_merkle,
+            maybe_hash,
+            commit_store,
+            base,
             level,
         }
     }
@@ -992,7 +1010,7 @@ fn write_commit<P: AsRef<Path>>(
     //     maybe_hash: base.as_ref().and_then(|base| base.maybe_hash),
     // };
 
-    let mut commit = base.unwrap_or(Commit::new(
+    let mut commit = base.unwrap_or(Commit::from(
         &commit_store,
         base_info.maybe_base,
         base_info.level,
