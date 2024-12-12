@@ -15,7 +15,7 @@ mod session;
 mod tree;
 
 use std::cell::Ref;
-use std::cmp::max;
+use std::cmp::{max, min};
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
 use std::collections::{BTreeMap, BTreeSet};
@@ -125,6 +125,25 @@ impl CommitStore {
         let mut v: Vec<u64> = self.levels.clone().into_iter().collect();
         v.sort(); // todo: this should not be needed but somehow it is
         v
+    }
+
+    pub fn get_levels_to_remove(&mut self) -> Vec<u64> {
+        let mut min_used_level = u64::MAX;
+        for c in self.commits.values() {
+            if c.level < min_used_level {
+                min_used_level = c.level;
+            }
+        }
+        min_used_level = min(min_used_level, self.current_level);
+        let lvls: Vec<u64> = self
+            .get_levels()
+            .into_iter()
+            .filter(|l| *l < min_used_level && *l != 0)
+            .collect();
+        for l in lvls.iter() {
+            self.levels.remove(l);
+        }
+        lvls
     }
 
     pub fn get_element_and_base(
@@ -963,6 +982,7 @@ fn sync_loop<P: AsRef<Path>>(
                 let mut commit_store = commit_store.lock().unwrap();
                 let target_level = commit_store.level_for_finalize();
                 let levels = commit_store.get_levels();
+                let levels_to_remove = commit_store.get_levels_to_remove();
                 if let Some(commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
                         "finalizing commit proper started {}",
@@ -974,6 +994,7 @@ fn sync_loop<P: AsRef<Path>>(
                         commit.level,
                         target_level,
                         &levels,
+                        &levels_to_remove,
                     );
                     match &io_result {
                         Ok(_) => tracing::trace!(
@@ -1293,7 +1314,6 @@ fn find_file_at_level(
     None
 }
 
-#[allow(dead_code)]
 fn copy_file_to_level(
     src_path: impl AsRef<Path>,
     main_dir: impl AsRef<Path>,
@@ -1305,13 +1325,70 @@ fn copy_file_to_level(
         return Ok(());
     }
     let level_dir = main_dir.as_ref().join(format!("{}", target_level));
-    println!("UUM level_dir={:?}", level_dir);
     let dst_dir = level_dir.join(contract_id_str.as_ref());
     fs::create_dir_all(&dst_dir)?;
     let copy_dst = dst_dir.join(filename.as_ref());
-    let r = fs::copy(&src_path, &copy_dst).map(|_| ());
-    println!("xcopied {:?} to {:?}", src_path.as_ref(), &copy_dst);
-    r
+    fs::copy(&src_path, copy_dst).map(|_| ())
+}
+
+fn squash_levels(
+    main_dir: impl AsRef<Path>,
+    l1: u64,
+    l2: u64,
+) -> io::Result<()> {
+    println!("UUXX squash_levels {} {}", l1, l2);
+    if l1 < 2 {
+        return Ok(());
+    }
+    let dst_dir = if l1 == 2 || l2 < 2 {
+        main_dir.as_ref().to_path_buf()
+    } else {
+        main_dir.as_ref().join(format!("{}", l2))
+    };
+    let src_dir = main_dir.as_ref().join(format!("{}", l1));
+    if !src_dir.is_dir() || !dst_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&src_dir)? {
+        let entry = entry?;
+        let src_dir_path = entry.path();
+        let dst_dir_path = dst_dir.join(entry.file_name());
+        for inner_entry in fs::read_dir(&src_dir_path)? {
+            let inner_entry = inner_entry?;
+            let src_file_path = inner_entry.path();
+            if !src_file_path.is_file() {
+                continue;
+            }
+            println!(
+                "UUXX squash_levels - renaming {:?} to {:?}",
+                src_file_path,
+                dst_dir_path.join(inner_entry.file_name())
+            );
+            fs::rename(
+                src_file_path,
+                dst_dir_path.join(inner_entry.file_name()),
+            )?;
+            println!("UUXX after renaming");
+        }
+        println!("UUXX removing dir {:?}", &src_dir_path);
+        fs::remove_dir(&src_dir_path)?;
+    }
+    println!("UUXX removing big dir {:?}", &src_dir);
+    fs::remove_dir(&src_dir)?;
+    Ok(())
+}
+
+fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
+    println!("UUXX remove_levels {:?}", &levels);
+    let mut lvls: Vec<u64> = levels.into();
+    lvls.sort();
+    lvls.reverse();
+    let l = lvls.len();
+    lvls.push(0);
+    for i in 0..l {
+        squash_levels(&main_dir, lvls[i], lvls[i + 1])?;
+    }
+    Ok(())
 }
 
 /// Finalize commit
@@ -1321,6 +1398,7 @@ fn finalize_commit<P: AsRef<Path>>(
     commit_level: u64,
     target_level: u64,
     levels: &[u64],
+    levels_to_remove: &[u64],
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
     let commit_id_str = hex::encode(root);
@@ -1329,10 +1407,10 @@ fn finalize_commit<P: AsRef<Path>>(
     let tree_pos_path = commit_path.join(TREE_POS_FILE);
     let tree_pos_opt_path = commit_path.join(TREE_POS_OPT_FILE);
     let base_info = base_from_path(&base_info_path)?;
+    let mem_path = main_dir.join(MEMORY_DIR);
     for contract_hint in base_info.contract_hints {
         let contract_hex = hex::encode(contract_hint);
         // MEMORY
-        let mem_path = main_dir.join(MEMORY_DIR);
         let src_path = mem_path.join(&contract_hex).join(&commit_id_str);
         for entry in fs::read_dir(&src_path)? {
             let filename = entry?.file_name().to_string_lossy().to_string();
@@ -1372,6 +1450,7 @@ fn finalize_commit<P: AsRef<Path>>(
         }
         fs::remove_dir(src_leaf_path)?;
     }
+    remove_levels(&mem_path, levels_to_remove)?;
     // STORE CURRENT LEVEL
     let level_file_path = main_dir.join(MEMORY_DIR).join(LEVEL_FILE);
     let mut level_file = OpenOptions::new()
