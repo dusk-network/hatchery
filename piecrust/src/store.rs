@@ -15,12 +15,13 @@ mod session;
 mod tree;
 
 use std::cell::Ref;
+use std::cmp::max;
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, OpenOptions};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::{fs, io, thread};
@@ -49,6 +50,7 @@ const BASE_FILE: &str = "base";
 const TREE_POS_FILE: &str = "tree_pos";
 const TREE_POS_OPT_FILE: &str = "tree_pos_opt";
 const ELEMENT_FILE: &str = "element";
+const LEVEL_FILE: &str = "aux";
 const OBJECTCODE_EXTENSION: &str = "a";
 const METADATA_EXTENSION: &str = "m";
 const MAIN_DIR: &str = "main";
@@ -77,6 +79,7 @@ impl Debug for ContractStore {
 pub struct CommitStore {
     commits: BTreeMap<Hash, Commit>,
     main_index: NewContractIndex,
+    current_level: u64,
 }
 
 impl CommitStore {
@@ -84,6 +87,7 @@ impl CommitStore {
         Self {
             commits: BTreeMap::new(),
             main_index: NewContractIndex::new(),
+            current_level: 0,
         }
     }
 
@@ -93,6 +97,22 @@ impl CommitStore {
 
     pub fn get_commit(&self, hash: &Hash) -> Option<&Commit> {
         self.commits.get(hash)
+    }
+
+    pub fn level_for_commit(&self) -> u64 {
+        println!("UUM level_for_new_commit: {}", self.current_level);
+        self.current_level
+    }
+
+    pub fn level_for_finalize(&mut self) -> u64 {
+        self.current_level += 1;
+        println!("UUM level_for_finalize: {}", self.current_level);
+        self.current_level
+    }
+
+    pub fn set_current_level(&mut self, level: u64) {
+        println!("UUM set_current_level: {}", level);
+        self.current_level = level;
     }
 
     pub fn get_element_and_base(
@@ -309,7 +329,11 @@ fn read_all_commits<P: AsRef<Path>>(
     let root_dir = root_dir.join(MAIN_DIR);
     fs::create_dir_all(&root_dir)?;
 
-    for entry in fs::read_dir(root_dir)? {
+    println!("UUM reading all commits - begin");
+
+    let mut max_level = 0u64;
+
+    for entry in fs::read_dir(&root_dir)? {
         let entry = entry?;
         if entry.path().is_dir() {
             let filename = entry.file_name();
@@ -324,9 +348,33 @@ fn read_all_commits<P: AsRef<Path>>(
                 read_commit(engine, entry.path(), commit_store.clone())?;
             tracing::trace!("before read_commit");
             let root = *commit.root();
+            if commit.level > max_level {
+                max_level = commit.level;
+            }
             commit_store.lock().unwrap().insert_commit(root, commit);
         }
     }
+
+    // READ LEVEL FILE
+    let level_file_path = root_dir.join(MEMORY_DIR).join(LEVEL_FILE);
+    let level = if let Ok(mut level_file) =
+        OpenOptions::new().read(true).open(level_file_path)
+    {
+        const LEVEL_BUF: usize = std::mem::size_of::<u64>();
+        let mut level_a = [0u8; LEVEL_BUF];
+        let mut level_bytes = Vec::new();
+        level_file.read_to_end(&mut level_bytes)?;
+        assert!(level_bytes.len() >= LEVEL_BUF);
+        level_a.copy_from_slice(&level_bytes);
+        let level = u64::from_le_bytes(level_a);
+        println!("UUM read level from file: {}", level);
+        max(level, max_level)
+    } else {
+        max_level
+    };
+    commit_store.lock().unwrap().set_current_level(level);
+
+    println!("UUM reading all commits - end");
 
     Ok(())
 }
@@ -901,12 +949,13 @@ fn sync_loop<P: AsRef<Path>>(
                 }
 
                 let mut commit_store = commit_store.lock().unwrap();
-                if let Some(commit) = commit_store.get_commit(&root) {
+                if let Some(_commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
                         "finalizing commit proper started {}",
                         hex::encode(root.as_bytes())
                     );
-                    let io_result = finalize_commit(root, root_dir, commit);
+                    let level = commit_store.level_for_finalize();
+                    let io_result = finalize_commit(root, root_dir, level);
                     match &io_result {
                         Ok(_) => tracing::trace!(
                             "finalizing commit proper finished: {:?}",
@@ -989,9 +1038,8 @@ fn write_commit<P: AsRef<Path>>(
 ) -> io::Result<Hash> {
     let root_dir = root_dir.as_ref();
 
-    let base_info = BaseInfo {
+    let mut base_info = BaseInfo {
         maybe_base: base.as_ref().map(|base| *base.root()),
-        level: base.as_ref().map(|base| base.level + 1).unwrap_or(0),
         ..Default::default()
     };
 
@@ -1010,11 +1058,8 @@ fn write_commit<P: AsRef<Path>>(
     //     maybe_hash: base.as_ref().and_then(|base| base.maybe_hash),
     // };
 
-    let mut commit = base.unwrap_or(Commit::from(
-        &commit_store,
-        base_info.maybe_base,
-        base_info.level,
-    ));
+    let mut commit =
+        base.unwrap_or(Commit::from(&commit_store, base_info.maybe_base, 0));
     for (contract_id, contract_data) in &commit_contracts {
         if contract_data.is_new {
             commit.remove_and_insert(*contract_id, &contract_data.memory);
@@ -1028,11 +1073,19 @@ fn write_commit<P: AsRef<Path>>(
     commit.maybe_hash = Some(root);
     commit.base = base_info.maybe_base;
 
-    // Don't write the commit if it already exists on disk. This may happen if
-    // the same transactions on the same base commit for example.
-    if commit_store.lock().unwrap().contains_key(&root) {
-        return Ok(root);
-    }
+    let level = {
+        let commit_store_guard = commit_store.lock().unwrap();
+        if commit_store_guard.contains_key(&root) {
+            // Don't write the commit if it already exists on disk. This may
+            // happen if the same transactions on the same base
+            // commit for example.
+            return Ok(root);
+        }
+        commit_store_guard.level_for_commit()
+    };
+    println!("UUM writing commit at level {}", level);
+    base_info.level = level;
+    commit.level = level;
 
     write_commit_inner(root_dir, &commit, commit_contracts, root_hex, base_info)
         .map(|_| {
@@ -1198,10 +1251,11 @@ fn delete_commit_dir<P: AsRef<Path>>(
 fn finalize_commit<P: AsRef<Path>>(
     root: Hash,
     root_dir: P,
-    commit: &Commit,
+    level: u64,
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
     let root_str = hex::encode(root);
+    let level_str = format!("{}", level);
     let commit_path = main_dir.join(&root_str);
     let base_info_path = commit_path.join(BASE_FILE);
     let tree_pos_path = commit_path.join(TREE_POS_FILE);
@@ -1223,8 +1277,7 @@ fn finalize_commit<P: AsRef<Path>>(
                 if dst_file_path.is_file() {
                     // if destination exists, we need to create a copy of it at
                     // commit's level
-                    let level_str = format!("{}", commit.level);
-                    let level_dir = main_dir.join(MEMORY_DIR).join(level_str);
+                    let level_dir = main_dir.join(MEMORY_DIR).join(&level_str);
                     fs::create_dir_all(&level_dir)?;
                     let copy_dst_dir = level_dir.join(&contract_hex); // .join(&root_str); // this is a new "main", we don't want
                                                                       // it to be commit specific
@@ -1248,6 +1301,13 @@ fn finalize_commit<P: AsRef<Path>>(
         }
         fs::remove_dir(src_leaf_path)?;
     }
+    // STORE CURRENT LEVEL
+    let level_file_path = main_dir.join(MEMORY_DIR).join(LEVEL_FILE);
+    let mut level_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(level_file_path)?;
+    level_file.write_all(&level.to_le_bytes())?;
 
     fs::remove_file(base_info_path)?;
     let _ = fs::remove_file(tree_pos_path);
