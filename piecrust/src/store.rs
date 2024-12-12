@@ -80,6 +80,7 @@ pub struct CommitStore {
     commits: BTreeMap<Hash, Commit>,
     main_index: NewContractIndex,
     current_level: u64,
+    levels: BTreeSet<u64>,
 }
 
 impl CommitStore {
@@ -88,10 +89,12 @@ impl CommitStore {
             commits: BTreeMap::new(),
             main_index: NewContractIndex::new(),
             current_level: 0,
+            levels: BTreeSet::new(),
         }
     }
 
     pub fn insert_commit(&mut self, hash: Hash, commit: Commit) {
+        self.levels.insert(commit.level);
         self.commits.insert(hash, commit);
     }
 
@@ -106,13 +109,22 @@ impl CommitStore {
 
     pub fn level_for_finalize(&mut self) -> u64 {
         self.current_level += 1;
+        self.levels.insert(self.current_level);
         println!("UUM level_for_finalize: {}", self.current_level);
         self.current_level
     }
 
     pub fn set_current_level(&mut self, level: u64) {
+        self.levels.insert(level);
         println!("UUM set_current_level: {}", level);
         self.current_level = level;
+    }
+
+    // todo: use with care until this is optimized
+    pub fn get_levels(&self) -> Vec<u64> {
+        let mut v: Vec<u64> = self.levels.clone().into_iter().collect();
+        v.sort(); // todo: this should not be needed but somehow it is
+        v
     }
 
     pub fn get_element_and_base(
@@ -950,6 +962,7 @@ fn sync_loop<P: AsRef<Path>>(
 
                 let mut commit_store = commit_store.lock().unwrap();
                 let target_level = commit_store.level_for_finalize();
+                let levels = commit_store.get_levels();
                 if let Some(commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
                         "finalizing commit proper started {}",
@@ -960,6 +973,7 @@ fn sync_loop<P: AsRef<Path>>(
                         root_dir,
                         commit.level,
                         target_level,
+                        &levels,
                     );
                     match &io_result {
                         Ok(_) => tracing::trace!(
@@ -1253,24 +1267,26 @@ fn delete_commit_dir<P: AsRef<Path>>(
 }
 
 #[allow(dead_code)]
+// note, no commit id here, edge is oblivious to commits, it is a moving main
 fn find_file_at_level(
     main_dir: impl AsRef<Path>,
     level: u64,
     contract_id_str: impl AsRef<str>,
-    commit_id_str: impl AsRef<str>,
     filename: impl AsRef<str>,
     levels: &[u64], // sorted ascending
 ) -> Option<PathBuf> {
-    let postfix = PathBuf::from(contract_id_str.as_ref())
-        .join(commit_id_str.as_ref())
-        .join(filename.as_ref());
-    for l in levels.iter().rev().take_while(|&l| *l > level) {
+    let postfix =
+        PathBuf::from(contract_id_str.as_ref()).join(filename.as_ref());
+    for l in levels.iter().rev() {
+        if *l > level {
+            continue;
+        }
         let file_path = if *l != 0 {
             main_dir.as_ref().join(format!("{}", *l)).join(&postfix)
         } else {
             main_dir.as_ref().join(&postfix)
         };
-        if file_path.is_file() {
+        if file_path.is_file() || *l == 0 {
             return Some(file_path);
         }
     }
@@ -1289,6 +1305,7 @@ fn copy_file_to_level(
         return Ok(());
     }
     let level_dir = main_dir.as_ref().join(format!("{}", target_level));
+    println!("UUM level_dir={:?}", level_dir);
     let dst_dir = level_dir.join(contract_id_str.as_ref());
     fs::create_dir_all(&dst_dir)?;
     let copy_dst = dst_dir.join(filename.as_ref());
@@ -1301,12 +1318,13 @@ fn copy_file_to_level(
 fn finalize_commit<P: AsRef<Path>>(
     root: Hash,
     root_dir: P,
-    _commit_level: u64,
+    commit_level: u64,
     target_level: u64,
+    levels: &[u64],
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
-    let root_str = hex::encode(root);
-    let commit_path = main_dir.join(&root_str);
+    let commit_id_str = hex::encode(root);
+    let commit_path = main_dir.join(&commit_id_str);
     let base_info_path = commit_path.join(BASE_FILE);
     let tree_pos_path = commit_path.join(TREE_POS_FILE);
     let tree_pos_opt_path = commit_path.join(TREE_POS_OPT_FILE);
@@ -1314,32 +1332,38 @@ fn finalize_commit<P: AsRef<Path>>(
     for contract_hint in base_info.contract_hints {
         let contract_hex = hex::encode(contract_hint);
         // MEMORY
-        let src_path = main_dir
-            .join(MEMORY_DIR)
-            .join(&contract_hex)
-            .join(&root_str);
-        let dst_path = main_dir.join(MEMORY_DIR).join(&contract_hex);
+        let mem_path = main_dir.join(MEMORY_DIR);
+        let src_path = mem_path.join(&contract_hex).join(&commit_id_str);
         for entry in fs::read_dir(&src_path)? {
             let filename = entry?.file_name().to_string_lossy().to_string();
             let src_file_path = src_path.join(&filename);
-            let dst_file_path = dst_path.join(&filename);
             if src_file_path.is_file() {
-                if dst_file_path.is_file() {
-                    copy_file_to_level(
-                        &dst_file_path,
-                        main_dir.join(MEMORY_DIR),
-                        target_level,
-                        &contract_hex,
-                        &filename,
-                    )?;
+                if let Some(dst_file_path) = find_file_at_level(
+                    &mem_path,
+                    commit_level,
+                    &contract_hex,
+                    &filename,
+                    levels,
+                ) {
+                    if dst_file_path.is_file() {
+                        copy_file_to_level(
+                            &dst_file_path,
+                            main_dir.join(MEMORY_DIR),
+                            target_level,
+                            &contract_hex,
+                            &filename,
+                        )?;
+                    }
+                    fs::rename(src_file_path, dst_file_path)?;
                 }
-                fs::rename(src_file_path, dst_file_path)?;
             }
         }
         fs::remove_dir(&src_path)?;
         // LEAF
-        let src_leaf_path =
-            main_dir.join(LEAF_DIR).join(&contract_hex).join(&root_str);
+        let src_leaf_path = main_dir
+            .join(LEAF_DIR)
+            .join(&contract_hex)
+            .join(&commit_id_str);
         let dst_leaf_path = main_dir.join(LEAF_DIR).join(&contract_hex);
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
         let dst_leaf_file_path = dst_leaf_path.join(ELEMENT_FILE);
