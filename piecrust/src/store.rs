@@ -949,13 +949,18 @@ fn sync_loop<P: AsRef<Path>>(
                 }
 
                 let mut commit_store = commit_store.lock().unwrap();
-                if let Some(_commit) = commit_store.get_commit(&root) {
+                let target_level = commit_store.level_for_finalize();
+                if let Some(commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
                         "finalizing commit proper started {}",
                         hex::encode(root.as_bytes())
                     );
-                    let level = commit_store.level_for_finalize();
-                    let io_result = finalize_commit(root, root_dir, level);
+                    let io_result = finalize_commit(
+                        root,
+                        root_dir,
+                        commit.level,
+                        target_level,
+                    );
                     match &io_result {
                         Ok(_) => tracing::trace!(
                             "finalizing commit proper finished: {:?}",
@@ -1247,15 +1252,60 @@ fn delete_commit_dir<P: AsRef<Path>>(
     Ok(())
 }
 
+#[allow(dead_code)]
+fn find_file_at_level(
+    main_dir: impl AsRef<Path>,
+    level: u64,
+    contract_id_str: impl AsRef<str>,
+    commit_id_str: impl AsRef<str>,
+    filename: impl AsRef<str>,
+    levels: &[u64], // sorted ascending
+) -> Option<PathBuf> {
+    let postfix = PathBuf::from(contract_id_str.as_ref())
+        .join(commit_id_str.as_ref())
+        .join(filename.as_ref());
+    for l in levels.iter().rev().take_while(|&l| *l > level) {
+        let file_path = if *l != 0 {
+            main_dir.as_ref().join(format!("{}", *l)).join(&postfix)
+        } else {
+            main_dir.as_ref().join(&postfix)
+        };
+        if file_path.is_file() {
+            return Some(file_path);
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
+fn copy_file_to_level(
+    src_path: impl AsRef<Path>,
+    main_dir: impl AsRef<Path>,
+    target_level: u64,
+    contract_id_str: impl AsRef<str>,
+    filename: impl AsRef<str>,
+) -> io::Result<()> {
+    if !src_path.as_ref().is_file() {
+        return Ok(());
+    }
+    let level_dir = main_dir.as_ref().join(format!("{}", target_level));
+    let dst_dir = level_dir.join(contract_id_str.as_ref());
+    fs::create_dir_all(&dst_dir)?;
+    let copy_dst = dst_dir.join(filename.as_ref());
+    let r = fs::copy(&src_path, &copy_dst).map(|_| ());
+    println!("xcopied {:?} to {:?}", src_path.as_ref(), &copy_dst);
+    r
+}
+
 /// Finalize commit
 fn finalize_commit<P: AsRef<Path>>(
     root: Hash,
     root_dir: P,
-    level: u64,
+    _commit_level: u64,
+    target_level: u64,
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
     let root_str = hex::encode(root);
-    let level_str = format!("{}", level);
     let commit_path = main_dir.join(&root_str);
     let base_info_path = commit_path.join(BASE_FILE);
     let tree_pos_path = commit_path.join(TREE_POS_FILE);
@@ -1270,21 +1320,18 @@ fn finalize_commit<P: AsRef<Path>>(
             .join(&root_str);
         let dst_path = main_dir.join(MEMORY_DIR).join(&contract_hex);
         for entry in fs::read_dir(&src_path)? {
-            let filename = entry?.file_name();
+            let filename = entry?.file_name().to_string_lossy().to_string();
             let src_file_path = src_path.join(&filename);
             let dst_file_path = dst_path.join(&filename);
             if src_file_path.is_file() {
                 if dst_file_path.is_file() {
-                    // if destination exists, we need to create a copy of it at
-                    // commit's level
-                    let level_dir = main_dir.join(MEMORY_DIR).join(&level_str);
-                    fs::create_dir_all(&level_dir)?;
-                    let copy_dst_dir = level_dir.join(&contract_hex); // .join(&root_str); // this is a new "main", we don't want
-                                                                      // it to be commit specific
-                    fs::create_dir_all(&copy_dst_dir)?;
-                    let copy_dst = copy_dst_dir.join(&filename);
-                    fs::copy(&dst_file_path, &copy_dst)?;
-                    println!("xcopied {:?} to {:?}", &dst_file_path, &copy_dst);
+                    copy_file_to_level(
+                        &dst_file_path,
+                        main_dir.join(MEMORY_DIR),
+                        target_level,
+                        &contract_hex,
+                        &filename,
+                    )?;
                 }
                 fs::rename(src_file_path, dst_file_path)?;
             }
@@ -1307,7 +1354,7 @@ fn finalize_commit<P: AsRef<Path>>(
         .create(true)
         .write(true)
         .open(level_file_path)?;
-    level_file.write_all(&level.to_le_bytes())?;
+    level_file.write_all(&target_level.to_le_bytes())?;
 
     fs::remove_file(base_info_path)?;
     let _ = fs::remove_file(tree_pos_path);
