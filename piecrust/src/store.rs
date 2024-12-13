@@ -1355,11 +1355,11 @@ fn squash_levels(
     l2: u64,
 ) -> io::Result<()> {
     println!("UUXX squash_levels {} {}", l1, l2);
-    if l1 < 2 {
+    if l1 < 1 || l1 <= l2 {
         return Ok(());
     }
     let edge_dir = mem_dir.as_ref().join(EDGE_DIR);
-    let dst_dir = if l1 == 2 || l2 < 2 {
+    let dst_dir = if l2 == 0 {
         mem_dir.as_ref().to_path_buf()
     } else {
         edge_dir.join(format!("{}", l2))
