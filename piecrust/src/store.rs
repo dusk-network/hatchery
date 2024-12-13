@@ -609,6 +609,8 @@ fn index_merkle_from_path(
 
     let mut index: NewContractIndex = NewContractIndex::new();
     let mut merkle: ContractsMerkle = ContractsMerkle::default();
+    let mut merkle_src1: BTreeMap<u32, (Hash, u64, ContractId)> =
+        BTreeMap::new();
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -639,13 +641,17 @@ fn index_merkle_from_path(
                         ),
                         )
                     })?;
-                // if let Some(h) = element.hash() {
-                //     merkle.insert_with_int_pos(
-                //         position_from_contract(&contract_id),
-                //         element.int_pos().expect("int pos should be
-                // present"),         h,
-                //     );
-                // }
+                if let Some(h) = element.hash() {
+                    //     merkle.insert_with_int_pos(
+                    //         position_from_contract(&contract_id),
+                    //         element.int_pos().expect("int pos should be
+                    // present"),         h,
+                    //     );
+                    merkle_src1.insert(
+                        element.int_pos().expect("aa") as u32,
+                        (h, position_from_contract(&contract_id), contract_id),
+                    );
+                }
                 if element_depth != u32::MAX {
                     index.insert_contract_index(&contract_id, element);
                 } else {
@@ -662,6 +668,16 @@ fn index_merkle_from_path(
         Some(tree_pos) => {
             for (int_pos, (hash, pos)) in tree_pos.iter() {
                 merkle.insert_with_int_pos(*pos, *int_pos as u64, *hash);
+                if let Some((hh, pospos, cid)) = merkle_src1.get(int_pos) {
+                    if hash != hh {
+                        println!("DISCREPANCY hashes not equal at int pos={} contract={}", int_pos, hex::encode(cid.as_bytes()));
+                    }
+                    if pos != pospos {
+                        println!("DISCREPANCY pos not equal at int pos={} orig={} src1={}", int_pos, pos, pospos);
+                    }
+                } else {
+                    println!("DISCREPANCY POS not found {}", int_pos);
+                }
             }
         }
         None => {
