@@ -409,6 +409,10 @@ fn read_all_commits<P: AsRef<Path>>(
     }
     commit_store.lock().unwrap().set_current_level(max_level);
 
+    // important: level 0 is always needed
+    let level_zero = [0u64];
+    commit_store.lock().unwrap().add_levels(&level_zero);
+
     println!("UUM reading all commits - end");
 
     Ok(())
@@ -986,7 +990,9 @@ fn sync_loop<P: AsRef<Path>>(
                 let mut commit_store = commit_store.lock().unwrap();
                 let target_level = commit_store.level_for_finalize();
                 let levels = commit_store.get_levels();
+                println!("UUM levels={:?}", levels);
                 let levels_to_remove = commit_store.get_levels_to_remove();
+                println!("UUM levels_to_remove={:?}", levels_to_remove);
                 if let Some(commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
                         "finalizing commit proper started {}",
@@ -1339,11 +1345,12 @@ fn copy_file_to_level(
     let dst_dir = level_dir.join(contract_id_str.as_ref());
     fs::create_dir_all(&dst_dir)?;
     let copy_dst = dst_dir.join(filename.as_ref());
-    fs::copy(&src_path, copy_dst).map(|_| ())
+    println!("UUM LEVEL copy {:?} to {:?}", src_path.as_ref(), copy_dst);
+    fs::copy(src_path.as_ref(), copy_dst).map(|_| ())
 }
 
 fn squash_levels(
-    main_dir: impl AsRef<Path>,
+    mem_dir: impl AsRef<Path>,
     l1: u64,
     l2: u64,
 ) -> io::Result<()> {
@@ -1351,12 +1358,13 @@ fn squash_levels(
     if l1 < 2 {
         return Ok(());
     }
+    let edge_dir = mem_dir.as_ref().join(EDGE_DIR);
     let dst_dir = if l1 == 2 || l2 < 2 {
-        main_dir.as_ref().to_path_buf()
+        mem_dir.as_ref().to_path_buf()
     } else {
-        main_dir.as_ref().join(EDGE_DIR).join(format!("{}", l2))
+        edge_dir.join(format!("{}", l2))
     };
-    let src_dir = main_dir.as_ref().join(EDGE_DIR).join(format!("{}", l1));
+    let src_dir = edge_dir.join(format!("{}", l1));
     if !src_dir.is_dir() || !dst_dir.is_dir() {
         return Ok(());
     }
@@ -1389,7 +1397,7 @@ fn squash_levels(
     Ok(())
 }
 
-fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
+fn remove_levels(mem_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
     println!("UUXX remove_levels {:?}", &levels);
     let mut lvls: Vec<u64> = levels.into();
     lvls.sort();
@@ -1397,7 +1405,7 @@ fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
     let l = lvls.len();
     lvls.push(0);
     for i in 0..l {
-        squash_levels(&main_dir, lvls[i], lvls[i + 1])?;
+        squash_levels(&mem_dir, lvls[i], lvls[i + 1])?;
     }
     Ok(())
 }
@@ -1419,6 +1427,8 @@ fn finalize_commit<P: AsRef<Path>>(
     let tree_pos_opt_path = commit_path.join(TREE_POS_OPT_FILE);
     let base_info = base_from_path(&base_info_path)?;
     let mem_path = main_dir.join(MEMORY_DIR);
+    let level_dir = mem_path.join(EDGE_DIR).join(format!("{}", target_level));
+    fs::create_dir_all(level_dir)?; // we want level dir even if empty
     for contract_hint in base_info.contract_hints {
         let contract_hex = hex::encode(contract_hint);
         // MEMORY
@@ -1434,15 +1444,17 @@ fn finalize_commit<P: AsRef<Path>>(
                     &filename,
                     levels,
                 ) {
-                    if dst_file_path.is_file() {
-                        copy_file_to_level(
-                            &dst_file_path,
-                            &mem_path,
-                            target_level,
-                            &contract_hex,
-                            &filename,
-                        )?;
-                    }
+                    copy_file_to_level(
+                        &dst_file_path,
+                        &mem_path,
+                        target_level,
+                        &contract_hex,
+                        &filename,
+                    )?;
+                    println!(
+                        "UUM 001 rename {:?} to {:?}",
+                        src_file_path, dst_file_path
+                    );
                     fs::rename(src_file_path, dst_file_path)?;
                 }
             }
