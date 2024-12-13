@@ -1383,6 +1383,7 @@ fn squash_levels(
                 src_file_path,
                 dst_dir_path.join(inner_entry.file_name())
             );
+            fs::create_dir_all(&dst_dir_path)?;
             fs::rename(
                 src_file_path,
                 dst_dir_path.join(inner_entry.file_name()),
