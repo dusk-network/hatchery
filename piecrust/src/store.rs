@@ -1298,37 +1298,6 @@ fn delete_commit_dir<P: AsRef<Path>>(
     Ok(())
 }
 
-#[allow(dead_code)]
-// note, no commit id here, edge is oblivious to commits, it is a moving main
-fn find_file_at_level(
-    main_dir: impl AsRef<Path>,
-    level: u64,
-    contract_id_str: impl AsRef<str>,
-    filename: impl AsRef<str>,
-    levels: &[u64], // sorted ascending
-) -> Option<PathBuf> {
-    let postfix =
-        PathBuf::from(contract_id_str.as_ref()).join(filename.as_ref());
-    for l in levels.iter().rev() {
-        if *l > level {
-            continue;
-        }
-        let file_path = if *l != 0 {
-            main_dir
-                .as_ref()
-                .join(EDGE_DIR)
-                .join(format!("{}", *l))
-                .join(&postfix)
-        } else {
-            main_dir.as_ref().join(&postfix)
-        };
-        if file_path.is_file() || *l == 0 {
-            return Some(file_path);
-        }
-    }
-    None
-}
-
 fn copy_file_to_level(
     src_path: impl AsRef<Path>,
     main_dir: impl AsRef<Path>,
@@ -1439,7 +1408,7 @@ fn finalize_commit<P: AsRef<Path>>(
             let filename = entry?.file_name().to_string_lossy().to_string();
             let src_file_path = src_path.join(&filename);
             if src_file_path.is_file() {
-                if let Some(dst_file_path) = find_file_at_level(
+                if let Some(dst_file_path) = ContractSession::find_file_at_level(
                     &mem_path,
                     commit_level,
                     &contract_hex,

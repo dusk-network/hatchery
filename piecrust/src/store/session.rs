@@ -18,8 +18,8 @@ use crate::contract::ContractMetadata;
 use crate::store::tree::{Hash, PageOpening};
 use crate::store::{
     base_from_path, Bytecode, Call, Commit, CommitStore, Memory, Metadata,
-    Module, BASE_FILE, BYTECODE_DIR, ELEMENT_FILE, MAIN_DIR, MEMORY_DIR,
-    METADATA_EXTENSION, OBJECTCODE_EXTENSION, PAGE_SIZE,
+    Module, BASE_FILE, BYTECODE_DIR, EDGE_DIR, ELEMENT_FILE, MAIN_DIR,
+    MEMORY_DIR, METADATA_EXTENSION, OBJECTCODE_EXTENSION, PAGE_SIZE,
 };
 use crate::Error;
 
@@ -206,6 +206,39 @@ impl ContractSession {
         }
     }
 
+    /// Returns path to a file at a given level, and, if not present
+    /// tries lower levels form the list until found
+    /// note: no commit id here, edge is oblivious to commits,
+    /// this function implements a moving main
+    pub fn find_file_at_level(
+        main_dir: impl AsRef<Path>,
+        level: u64,
+        contract_id_str: impl AsRef<str>,
+        filename: impl AsRef<str>,
+        levels: &[u64], // sorted ascending
+    ) -> Option<PathBuf> {
+        let postfix =
+            PathBuf::from(contract_id_str.as_ref()).join(filename.as_ref());
+        for l in levels.iter().rev() {
+            if *l > level {
+                continue;
+            }
+            let file_path = if *l != 0 {
+                main_dir
+                    .as_ref()
+                    .join(EDGE_DIR)
+                    .join(format!("{}", *l))
+                    .join(&postfix)
+            } else {
+                main_dir.as_ref().join(&postfix)
+            };
+            if file_path.is_file() || *l == 0 {
+                return Some(file_path);
+            }
+        }
+        None
+    }
+
     /// Returns path to a file representing a given commit and element.
     ///
     /// Requires a contract's leaf path and a main state path.
@@ -261,6 +294,8 @@ impl ContractSession {
         contract: ContractId,
     ) -> io::Result<Option<ContractDataEntry>> {
         let commit_id = self.base.as_ref().map(|commit| *commit.root());
+        let levels = self.commit_store.lock().unwrap().get_levels();
+        let level = self.base.as_ref().map(|commit| commit.level).unwrap_or(0);
         match self.contracts.entry(contract) {
             Vacant(entry) => match &self.base {
                 None => Ok(None),
@@ -277,8 +312,8 @@ impl ContractSession {
                                 .with_extension(OBJECTCODE_EXTENSION);
                             let metadata_path = bytecode_path
                                 .with_extension(METADATA_EXTENSION);
-                            let memory_path =
-                                base_dir.join(MEMORY_DIR).join(contract_hex);
+                            let memory_dir = base_dir.join(MEMORY_DIR);
+                            let memory_path = memory_dir.join(&contract_hex);
 
                             let bytecode = Bytecode::from_file(bytecode_path)?;
                             let module =
@@ -304,11 +339,18 @@ impl ContractSession {
                                                         &base_dir,
                                                     )
                                                     .unwrap_or(
-                                                        memory_path.join(
-                                                            format!(
-                                                                "{page_index}"
-                                                            ),
-                                                        ),
+                                                        // memory_path.join(
+                                                        //     format!(
+                                                        //         "{page_index}"
+                                                        //     ),
+                                                        // ),
+                                                        Self::find_file_at_level(
+                                                            &memory_dir,
+                                                            level,
+                                                            &contract_hex,
+                                                            format!("{}", page_index),
+                                                            &levels,
+                                                        ).expect("todo")// todo: find_file_at_level should always return sth, not sure what to do when not
                                                     ),
                                                 ),
                                                 false => None,
