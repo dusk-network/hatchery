@@ -15,13 +15,13 @@ mod session;
 mod tree;
 
 use std::cell::Ref;
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Formatter};
 use std::fs::{create_dir_all, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::{fs, io, thread};
@@ -50,7 +50,6 @@ const BASE_FILE: &str = "base";
 const TREE_POS_FILE: &str = "tree_pos";
 const TREE_POS_OPT_FILE: &str = "tree_pos_opt";
 const ELEMENT_FILE: &str = "element";
-const LEVEL_FILE: &str = "aux";
 const OBJECTCODE_EXTENSION: &str = "a";
 const METADATA_EXTENSION: &str = "m";
 const MAIN_DIR: &str = "main";
@@ -126,6 +125,12 @@ impl CommitStore {
         let mut v: Vec<u64> = self.levels.clone().into_iter().collect();
         v.sort(); // todo: this should not be needed but somehow it is
         v
+    }
+
+    pub fn add_levels(&mut self, levels: &[u64]) {
+        for level in levels {
+            self.levels.insert(*level);
+        }
     }
 
     pub fn get_levels_to_remove(&mut self) -> Vec<u64> {
@@ -387,24 +392,22 @@ fn read_all_commits<P: AsRef<Path>>(
         }
     }
 
-    // READ LEVEL FILE
-    let level_file_path = root_dir.join(MEMORY_DIR).join(LEVEL_FILE);
-    let level = if let Ok(mut level_file) =
-        OpenOptions::new().read(true).open(level_file_path)
-    {
-        const LEVEL_BUF: usize = std::mem::size_of::<u64>();
-        let mut level_a = [0u8; LEVEL_BUF];
-        let mut level_bytes = Vec::new();
-        level_file.read_to_end(&mut level_bytes)?;
-        assert!(level_bytes.len() >= LEVEL_BUF);
-        level_a.copy_from_slice(&level_bytes);
-        let level = u64::from_le_bytes(level_a);
-        println!("UUM read level from file: {}", level);
-        max(level, max_level)
-    } else {
-        max_level
-    };
-    commit_store.lock().unwrap().set_current_level(level);
+    let edge_dir = root_dir.join(MEMORY_DIR).join(EDGE_DIR);
+    if edge_dir.is_dir() {
+        let mut scanned_levels = Vec::new();
+        for entry in fs::read_dir(edge_dir)? {
+            let entry = entry?;
+            let level_str = entry.file_name().to_string_lossy().to_string();
+            if let Ok(level) = level_str.parse::<u64>() {
+                if level > max_level {
+                    max_level = level;
+                }
+                scanned_levels.push(level);
+            }
+        }
+        commit_store.lock().unwrap().add_levels(&scanned_levels);
+    }
+    commit_store.lock().unwrap().set_current_level(max_level);
 
     println!("UUM reading all commits - end");
 
@@ -1459,13 +1462,6 @@ fn finalize_commit<P: AsRef<Path>>(
         fs::remove_dir(src_leaf_path)?;
     }
     remove_levels(&mem_path, levels_to_remove)?;
-    // STORE CURRENT LEVEL
-    let level_file_path = main_dir.join(MEMORY_DIR).join(LEVEL_FILE);
-    let mut level_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(level_file_path)?;
-    level_file.write_all(&target_level.to_le_bytes())?;
 
     fs::remove_file(base_info_path)?;
     let _ = fs::remove_file(tree_pos_path);
