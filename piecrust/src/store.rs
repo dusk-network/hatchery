@@ -133,7 +133,8 @@ impl CommitStore {
         }
     }
 
-    pub fn get_levels_to_remove(&mut self) -> Vec<u64> {
+    // removes levels and returns a list of levels that have been removed
+    pub fn remove_levels(&mut self) -> Vec<u64> {
         let mut min_used_level = u64::MAX;
         for c in self.commits.values() {
             if c.level < min_used_level {
@@ -991,7 +992,7 @@ fn sync_loop<P: AsRef<Path>>(
                 let target_level = commit_store.level_for_finalize();
                 let levels = commit_store.get_levels();
                 println!("UUM levels={:?}", levels);
-                let levels_to_remove = commit_store.get_levels_to_remove();
+                let levels_to_remove = commit_store.remove_levels();
                 println!("UUM levels_to_remove={:?}", levels_to_remove);
                 if let Some(commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
