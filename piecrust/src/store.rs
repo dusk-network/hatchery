@@ -54,6 +54,7 @@ const LEVEL_FILE: &str = "aux";
 const OBJECTCODE_EXTENSION: &str = "a";
 const METADATA_EXTENSION: &str = "m";
 const MAIN_DIR: &str = "main";
+const EDGE_DIR: &str = "edge";
 
 /// A store for all contract commits.
 pub struct ContractStore {
@@ -1303,7 +1304,11 @@ fn find_file_at_level(
             continue;
         }
         let file_path = if *l != 0 {
-            main_dir.as_ref().join(format!("{}", *l)).join(&postfix)
+            main_dir
+                .as_ref()
+                .join(EDGE_DIR)
+                .join(format!("{}", *l))
+                .join(&postfix)
         } else {
             main_dir.as_ref().join(&postfix)
         };
@@ -1324,7 +1329,10 @@ fn copy_file_to_level(
     if !src_path.as_ref().is_file() {
         return Ok(());
     }
-    let level_dir = main_dir.as_ref().join(format!("{}", target_level));
+    let level_dir = main_dir
+        .as_ref()
+        .join(EDGE_DIR)
+        .join(format!("{}", target_level));
     let dst_dir = level_dir.join(contract_id_str.as_ref());
     fs::create_dir_all(&dst_dir)?;
     let copy_dst = dst_dir.join(filename.as_ref());
@@ -1343,9 +1351,9 @@ fn squash_levels(
     let dst_dir = if l1 == 2 || l2 < 2 {
         main_dir.as_ref().to_path_buf()
     } else {
-        main_dir.as_ref().join(format!("{}", l2))
+        main_dir.as_ref().join(EDGE_DIR).join(format!("{}", l2))
     };
-    let src_dir = main_dir.as_ref().join(format!("{}", l1));
+    let src_dir = main_dir.as_ref().join(EDGE_DIR).join(format!("{}", l1));
     if !src_dir.is_dir() || !dst_dir.is_dir() {
         return Ok(());
     }
@@ -1426,7 +1434,7 @@ fn finalize_commit<P: AsRef<Path>>(
                     if dst_file_path.is_file() {
                         copy_file_to_level(
                             &dst_file_path,
-                            main_dir.join(MEMORY_DIR),
+                            &mem_path,
                             target_level,
                             &contract_hex,
                             &filename,
