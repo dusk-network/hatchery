@@ -253,7 +253,7 @@ impl ContractSession {
             None => {
                 let path = leaf_path.as_ref().join(ELEMENT_FILE);
                 if path.is_file() {
-                    Some((path, u32::MAX))
+                    Some((path, u32::MAX)) // HERE - explain if it ever happens
                 } else {
                     None
                 }

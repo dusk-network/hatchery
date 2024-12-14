@@ -474,9 +474,9 @@ fn commit_id_to_hash<S: AsRef<str>>(commit_id: S) -> Hash {
 
 fn contract_id_from_hex<S: AsRef<str>>(contract_id: S) -> ContractId {
     let bytes: [u8; 32] = hex::decode(contract_id.as_ref())
-        .expect("Hex decoding of commit id string should succeed")
+        .expect("Hex decoding of contract id string should succeed")
         .try_into()
-        .expect("Commit id string conversion should succeed");
+        .expect("Contract id string conversion should succeed");
     ContractId::from_bytes(bytes)
 }
 
@@ -614,10 +614,13 @@ fn index_merkle_from_path(
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
+        let filename = entry.file_name().to_string_lossy().to_string();
+        if filename == EDGE_DIR {
+            continue;
+        }
         if entry.path().is_dir() {
-            let contract_id_hex = entry.file_name();
-            let contract_id =
-                contract_id_from_hex(contract_id_hex.to_string_lossy());
+            let contract_id_hex = filename;
+            let contract_id = contract_id_from_hex(&contract_id_hex);
             let contract_leaf_path = leaf_dir.join(contract_id_hex);
             let (element_path, element_depth) = ContractSession::find_element(
                 *maybe_commit_id,
@@ -625,7 +628,7 @@ fn index_merkle_from_path(
                 &main_path,
                 0,
             )
-            .unwrap_or((contract_leaf_path.join(ELEMENT_FILE), 0));
+            .unwrap_or((contract_leaf_path.join(ELEMENT_FILE), 0)); // HERE - replace it with leveled approach
             if element_path.is_file() {
                 let element_bytes = fs::read(&element_path)?;
                 let element: ContractIndexElement =
@@ -1336,7 +1339,7 @@ fn copy_file_to_level(
 }
 
 fn squash_levels(
-    mem_dir: impl AsRef<Path>,
+    main_dir: impl AsRef<Path>,
     l1: u64,
     l2: u64,
 ) -> io::Result<()> {
@@ -1344,9 +1347,9 @@ fn squash_levels(
     if l1 < 1 || l1 <= l2 {
         return Ok(());
     }
-    let edge_dir = mem_dir.as_ref().join(EDGE_DIR);
+    let edge_dir = main_dir.as_ref().join(EDGE_DIR);
     let dst_dir = if l2 == 0 {
-        mem_dir.as_ref().to_path_buf()
+        main_dir.as_ref().to_path_buf()
     } else {
         edge_dir.join(format!("{}", l2))
     };
@@ -1384,7 +1387,7 @@ fn squash_levels(
     Ok(())
 }
 
-fn remove_levels(mem_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
+fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
     println!("UUXX remove_levels {:?}", &levels);
     let mut lvls: Vec<u64> = levels.into();
     lvls.sort();
@@ -1392,7 +1395,7 @@ fn remove_levels(mem_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
     let l = lvls.len();
     lvls.push(0);
     for i in 0..l {
-        squash_levels(&mem_dir, lvls[i], lvls[i + 1])?;
+        squash_levels(&main_dir, lvls[i], lvls[i + 1])?;
     }
     Ok(())
 }
@@ -1414,6 +1417,7 @@ fn finalize_commit<P: AsRef<Path>>(
     let tree_pos_opt_path = commit_path.join(TREE_POS_OPT_FILE);
     let base_info = base_from_path(&base_info_path)?;
     let mem_path = main_dir.join(MEMORY_DIR);
+    let leaf_path = main_dir.join(LEAF_DIR);
     let level_dir = mem_path.join(EDGE_DIR).join(format!("{}", target_level));
     fs::create_dir_all(level_dir)?; // we want level dir even if empty
     for contract_hint in base_info.contract_hints {
@@ -1439,7 +1443,7 @@ fn finalize_commit<P: AsRef<Path>>(
                         &filename,
                     )?;
                     println!(
-                        "UUM 001 rename {:?} to {:?}",
+                        "UUM (mem) rename {:?} to {:?}",
                         src_file_path, dst_file_path
                     );
                     fs::rename(src_file_path, dst_file_path)?;
@@ -1448,19 +1452,38 @@ fn finalize_commit<P: AsRef<Path>>(
         }
         fs::remove_dir(&src_path)?;
         // LEAF
-        let src_leaf_path = main_dir
-            .join(LEAF_DIR)
-            .join(&contract_hex)
-            .join(&commit_id_str);
-        let dst_leaf_path = main_dir.join(LEAF_DIR).join(&contract_hex);
+        let src_leaf_path = leaf_path.join(&contract_hex).join(&commit_id_str);
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
-        let dst_leaf_file_path = dst_leaf_path.join(ELEMENT_FILE);
         if src_leaf_file_path.is_file() {
-            fs::rename(src_leaf_file_path, dst_leaf_file_path)?;
+            // HERE - do sth similar as for memory files - before renaming copy
+            // dst to proper level
+            if let Some(dst_leaf_file_path) =
+                ContractSession::find_file_at_level(
+                    &leaf_path,
+                    commit_level,
+                    &contract_hex,
+                    ELEMENT_FILE,
+                    levels,
+                )
+            {
+                copy_file_to_level(
+                    &dst_leaf_file_path,
+                    &leaf_path,
+                    target_level,
+                    &contract_hex,
+                    ELEMENT_FILE,
+                )?;
+                println!(
+                    "UUM (leaf) rename {:?} to {:?}",
+                    src_leaf_file_path, dst_leaf_file_path
+                );
+                fs::rename(src_leaf_file_path, dst_leaf_file_path)?;
+            }
         }
         fs::remove_dir(src_leaf_path)?;
     }
     remove_levels(&mem_path, levels_to_remove)?;
+    remove_levels(&leaf_path, levels_to_remove)?;
 
     fs::remove_file(base_info_path)?;
     let _ = fs::remove_file(tree_pos_path);
