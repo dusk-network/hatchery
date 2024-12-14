@@ -363,12 +363,6 @@ impl NewContractIndex {
     ) -> impl Iterator<Item = (&ContractId, &ContractIndexElement)> {
         self.inner_contracts.iter()
     }
-
-    pub fn move_into(self, target: &mut Self) {
-        for (contract_id, element) in self.inner_contracts.into_iter() {
-            target.insert_contract_index(&contract_id, element);
-        }
-    }
 }
 
 type Wasm32PageOpening = dusk_merkle::Opening<Hash, P32_HEIGHT, P32_ARITY>;

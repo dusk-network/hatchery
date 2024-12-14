@@ -196,17 +196,7 @@ impl CommitStore {
     }
 
     pub fn remove_commit(&mut self, hash: &Hash) {
-        if let Some(commit) = self.commits.remove(hash) {
-            commit.index.move_into(&mut self.main_index);
-        }
-    }
-
-    pub fn insert_main_index(
-        &mut self,
-        contract_id: &ContractId,
-        element: ContractIndexElement,
-    ) {
-        self.main_index.insert_contract_index(contract_id, element);
+        self.commits.remove(hash);
     }
 }
 
@@ -602,7 +592,7 @@ fn index_merkle_from_path(
     main_path: impl AsRef<Path>,
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
-    commit_store: Arc<Mutex<CommitStore>>,
+    _commit_store: Arc<Mutex<CommitStore>>,
     maybe_tree_pos: Option<&TreePos>,
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
     let leaf_dir = leaf_dir.as_ref();
@@ -622,13 +612,12 @@ fn index_merkle_from_path(
             let contract_id_hex = filename;
             let contract_id = contract_id_from_hex(&contract_id_hex);
             let contract_leaf_path = leaf_dir.join(contract_id_hex);
-            let (element_path, element_depth) = ContractSession::find_element(
+            let element_path = ContractSession::find_element(
                 *maybe_commit_id,
                 &contract_leaf_path,
                 &main_path,
-                0,
             )
-            .unwrap_or((contract_leaf_path.join(ELEMENT_FILE), 0)); // HERE - replace it with leveled approach
+            .unwrap_or(contract_leaf_path.join(ELEMENT_FILE)); // HERE - replace it with leveled approach
             if element_path.is_file() {
                 let element_bytes = fs::read(&element_path)?;
                 let element: ContractIndexElement =
@@ -655,14 +644,7 @@ fn index_merkle_from_path(
                         (h, position_from_contract(&contract_id), contract_id),
                     );
                 }
-                if element_depth != u32::MAX {
-                    index.insert_contract_index(&contract_id, element);
-                } else {
-                    commit_store
-                        .lock()
-                        .unwrap()
-                        .insert_main_index(&contract_id, element);
-                }
+                index.insert_contract_index(&contract_id, element);
             }
         }
     }
@@ -1377,7 +1359,6 @@ fn squash_levels(
                 src_file_path,
                 dst_dir_path.join(inner_entry.file_name()),
             )?;
-            println!("UUXX after renaming");
         }
         println!("UUXX removing dir {:?}", &src_dir_path);
         fs::remove_dir(&src_dir_path)?;
@@ -1455,8 +1436,6 @@ fn finalize_commit<P: AsRef<Path>>(
         let src_leaf_path = leaf_path.join(&contract_hex).join(&commit_id_str);
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
         if src_leaf_file_path.is_file() {
-            // HERE - do sth similar as for memory files - before renaming copy
-            // dst to proper level
             if let Some(dst_leaf_file_path) =
                 ContractSession::find_file_at_level(
                     &leaf_path,
