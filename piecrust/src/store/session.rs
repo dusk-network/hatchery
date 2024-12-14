@@ -207,38 +207,28 @@ impl ContractSession {
     }
 
     /// Returns path to a file at a given level, and, if not present
-    /// tries lower levels form the list until found
+    /// tries lower levels form the list until found or level zero reached
     /// note: no commit id here, edge is oblivious to commits,
     /// this function implements a moving main
-    pub fn find_file_at_level(
+    /// note: may return path of a file which does not exist, in such
+    /// case it will be a path at level zero
+    pub fn find_file_path_at_level(
         main_dir: impl AsRef<Path>,
         level: u64,
         contract_id_str: impl AsRef<str>,
         filename: impl AsRef<str>,
         levels: &[u64], // sorted ascending
-    ) -> Option<PathBuf> {
-        // println!(
-        //     "find_file_at_level main_dir={:?} level={} levels={:?}",
-        //     main_dir.as_ref(),
-        //     level,
-        //     levels
-        // );
+    ) -> PathBuf {
         let postfix =
             PathBuf::from(contract_id_str.as_ref()).join(filename.as_ref());
-        if levels.is_empty() {
-            let file_path = main_dir.as_ref().join(&postfix);
-            // println!(
-            //     "find_file_at_level file_path={:?} exists={}",
-            //     file_path,
-            //     file_path.is_file()
-            // );
-            return file_path.is_file().then_some(file_path);
-        }
+        assert!(!levels.is_empty(), "level list must not be empty");
+        assert_eq!(levels[0], 0u64, "level 0 must be first in levels");
+        let mut file_path = PathBuf::new();
         for l in levels.iter().rev() {
             if *l > level {
                 continue;
             }
-            let file_path = if *l != 0 {
+            file_path = if *l != 0 {
                 main_dir
                     .as_ref()
                     .join(EDGE_DIR)
@@ -247,13 +237,11 @@ impl ContractSession {
             } else {
                 main_dir.as_ref().join(&postfix)
             };
-            // println!("find_file_at_level file_path={:?}", file_path);
-            if file_path.is_file() || *l == 0 {
-                return Some(file_path);
+            if file_path.is_file() {
+                break;
             }
         }
-        // println!("find_file_at_level NONE");
-        None
+        file_path
     }
 
     /// Returns path to a file representing a given commit and element.
@@ -353,18 +341,13 @@ impl ContractSession {
                                                         &base_dir,
                                                     )
                                                     .unwrap_or(
-                                                        // memory_path.join(
-                                                        //     format!(
-                                                        //         "{page_index}"
-                                                        //     ),
-                                                        // ),
-                                                        Self::find_file_at_level(
+                                                        Self::find_file_path_at_level(
                                                             &memory_dir,
                                                             level,
                                                             &contract_hex,
                                                             format!("{}", page_index),
                                                             &levels,
-                                                        ).expect("todo")// todo: find_file_at_level should always return sth, not sure what to do when not
+                                                        )
                                                     ),
                                                 ),
                                                 false => None,

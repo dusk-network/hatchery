@@ -631,14 +631,13 @@ fn index_merkle_from_path(
                 &main_path,
             );
             let element_path = match maybe_element_path {
-                None => ContractSession::find_file_at_level(
+                None => ContractSession::find_file_path_at_level(
                     leaf_dir,
                     level,
                     &contract_id_hex,
                     ELEMENT_FILE,
                     &levels,
-                )
-                .expect("find_file_at_level should always succeed"), // todo
+                ),
                 Some(p) => p,
             };
             if element_path.is_file() {
@@ -1432,26 +1431,21 @@ fn finalize_commit<P: AsRef<Path>>(
             let filename = entry?.file_name().to_string_lossy().to_string();
             let src_file_path = src_path.join(&filename);
             if src_file_path.is_file() {
-                if let Some(dst_file_path) = ContractSession::find_file_at_level(
+                let dst_file_path = ContractSession::find_file_path_at_level(
                     &mem_path,
                     commit_level,
                     &contract_hex,
                     &filename,
                     levels,
-                ) {
-                    copy_file_to_level(
-                        &dst_file_path,
-                        &mem_path,
-                        target_level,
-                        &contract_hex,
-                        &filename,
-                    )?;
-                    println!(
-                        "UUM (mem) rename {:?} to {:?}",
-                        src_file_path, dst_file_path
-                    );
-                    fs::rename(src_file_path, dst_file_path)?;
-                }
+                );
+                copy_file_to_level(
+                    &dst_file_path,
+                    &mem_path,
+                    target_level,
+                    &contract_hex,
+                    &filename,
+                )?;
+                fs::rename(src_file_path, dst_file_path)?;
             }
         }
         fs::remove_dir(&src_path)?;
@@ -1459,28 +1453,21 @@ fn finalize_commit<P: AsRef<Path>>(
         let src_leaf_path = leaf_path.join(&contract_hex).join(&commit_id_str);
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
         if src_leaf_file_path.is_file() {
-            if let Some(dst_leaf_file_path) =
-                ContractSession::find_file_at_level(
-                    &leaf_path,
-                    commit_level,
-                    &contract_hex,
-                    ELEMENT_FILE,
-                    levels,
-                )
-            {
-                copy_file_to_level(
-                    &dst_leaf_file_path,
-                    &leaf_path,
-                    target_level,
-                    &contract_hex,
-                    ELEMENT_FILE,
-                )?;
-                println!(
-                    "UUM (leaf) rename {:?} to {:?}",
-                    src_leaf_file_path, dst_leaf_file_path
-                );
-                fs::rename(src_leaf_file_path, dst_leaf_file_path)?;
-            }
+            let dst_leaf_file_path = ContractSession::find_file_path_at_level(
+                &leaf_path,
+                commit_level,
+                &contract_hex,
+                ELEMENT_FILE,
+                levels,
+            );
+            copy_file_to_level(
+                &dst_leaf_file_path,
+                &leaf_path,
+                target_level,
+                &contract_hex,
+                ELEMENT_FILE,
+            )?;
+            fs::rename(src_leaf_file_path, dst_leaf_file_path)?;
         }
         fs::remove_dir(src_leaf_path)?;
     }
