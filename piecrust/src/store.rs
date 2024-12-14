@@ -361,6 +361,10 @@ fn read_all_commits<P: AsRef<Path>>(
 
     let mut max_level = 0u64;
 
+    // important: level 0 is always needed
+    let level_zero = [0u64];
+    commit_store.lock().unwrap().add_levels(&level_zero);
+
     for entry in fs::read_dir(&root_dir)? {
         let entry = entry?;
         if entry.path().is_dir() {
@@ -399,10 +403,6 @@ fn read_all_commits<P: AsRef<Path>>(
         commit_store.lock().unwrap().add_levels(&scanned_levels);
     }
     commit_store.lock().unwrap().set_current_level(max_level);
-
-    // important: level 0 is always needed
-    let level_zero = [0u64];
-    commit_store.lock().unwrap().add_levels(&level_zero);
 
     println!("UUM reading all commits - end");
 
@@ -592,7 +592,7 @@ fn index_merkle_from_path(
     main_path: impl AsRef<Path>,
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
-    _commit_store: Arc<Mutex<CommitStore>>,
+    commit_store: Arc<Mutex<CommitStore>>,
     maybe_tree_pos: Option<&TreePos>,
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
     let leaf_dir = leaf_dir.as_ref();
@@ -601,6 +601,19 @@ fn index_merkle_from_path(
     let mut merkle: ContractsMerkle = ContractsMerkle::default();
     let mut merkle_src1: BTreeMap<u32, (Hash, u64, ContractId)> =
         BTreeMap::new();
+
+    let (level, levels) = {
+        let commit_store = commit_store.lock().unwrap();
+        let level = match maybe_commit_id {
+            Some(commit_id) => commit_store
+                .get_commit(commit_id)
+                .map(|commit| commit.level)
+                .unwrap_or(0),
+            None => 0,
+        };
+        let levels = commit_store.get_levels();
+        (level, levels)
+    };
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -611,13 +624,23 @@ fn index_merkle_from_path(
         if entry.path().is_dir() {
             let contract_id_hex = filename;
             let contract_id = contract_id_from_hex(&contract_id_hex);
-            let contract_leaf_path = leaf_dir.join(contract_id_hex);
-            let element_path = ContractSession::find_element(
+            let contract_leaf_path = leaf_dir.join(&contract_id_hex);
+            let maybe_element_path = ContractSession::find_element(
                 *maybe_commit_id,
                 &contract_leaf_path,
                 &main_path,
-            )
-            .unwrap_or(contract_leaf_path.join(ELEMENT_FILE)); // HERE - replace it with leveled approach
+            );
+            let element_path = match maybe_element_path {
+                None => ContractSession::find_file_at_level(
+                    leaf_dir,
+                    level,
+                    &contract_id_hex,
+                    ELEMENT_FILE,
+                    &levels,
+                )
+                .expect("find_file_at_level should always succeed"), // todo
+                Some(p) => p,
+            };
             if element_path.is_file() {
                 let element_bytes = fs::read(&element_path)?;
                 let element: ContractIndexElement =
@@ -654,7 +677,7 @@ fn index_merkle_from_path(
             for (int_pos, (hash, pos)) in tree_pos.iter() {
                 merkle.insert_with_int_pos(*pos, *int_pos as u64, *hash);
                 if let Some((hh, pospos, cid)) = merkle_src1.get(int_pos) {
-                    if hash != hh {
+                    if *hash != *hh {
                         println!("DISCREPANCY hashes not equal at int pos={} contract={}", int_pos, hex::encode(cid.as_bytes()));
                     }
                     if pos != pospos {

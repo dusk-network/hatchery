@@ -217,8 +217,23 @@ impl ContractSession {
         filename: impl AsRef<str>,
         levels: &[u64], // sorted ascending
     ) -> Option<PathBuf> {
+        // println!(
+        //     "find_file_at_level main_dir={:?} level={} levels={:?}",
+        //     main_dir.as_ref(),
+        //     level,
+        //     levels
+        // );
         let postfix =
             PathBuf::from(contract_id_str.as_ref()).join(filename.as_ref());
+        if levels.is_empty() {
+            let file_path = main_dir.as_ref().join(&postfix);
+            // println!(
+            //     "find_file_at_level file_path={:?} exists={}",
+            //     file_path,
+            //     file_path.is_file()
+            // );
+            return file_path.is_file().then_some(file_path);
+        }
         for l in levels.iter().rev() {
             if *l > level {
                 continue;
@@ -232,10 +247,12 @@ impl ContractSession {
             } else {
                 main_dir.as_ref().join(&postfix)
             };
+            // println!("find_file_at_level file_path={:?}", file_path);
             if file_path.is_file() || *l == 0 {
                 return Some(file_path);
             }
         }
+        // println!("find_file_at_level NONE");
         None
     }
 
@@ -248,22 +265,30 @@ impl ContractSession {
         leaf_path: impl AsRef<Path>,
         main_path: impl AsRef<Path>,
     ) -> Option<PathBuf> {
+        // println!(
+        //     "find_element commit={:?} leaf_path={:?} main_path={:?}",
+        //     commit.as_ref().map(|a| hex::encode(a.as_bytes())),
+        //     leaf_path.as_ref(),
+        //     main_path.as_ref()
+        // );
         if let Some(hash) = commit {
             let hash_hex = hex::encode(hash.as_bytes());
             let path = leaf_path.as_ref().join(&hash_hex).join(ELEMENT_FILE);
             if path.is_file() {
+                // println!("find_element SOME");
                 Some(path)
             } else {
                 let base_info_path =
                     main_path.as_ref().join(hash_hex).join(BASE_FILE);
-                let index = base_from_path(base_info_path).ok()?;
-                Self::find_element(
-                    index.maybe_base,
-                    leaf_path,
-                    main_path,
-                )
+                let r = base_from_path(base_info_path).ok();
+                // if r.is_none() {
+                //     println!("find_element NONE 1");
+                // }
+                let index = r?;
+                Self::find_element(index.maybe_base, leaf_path, main_path)
             }
         } else {
+            // println!("find_element NONE 2");
             None
         }
     }
