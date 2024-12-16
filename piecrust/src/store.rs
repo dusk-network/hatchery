@@ -162,6 +162,7 @@ impl CommitStore {
             }
             None => {
                 println!("READING FROM MAIN INDEX1");
+                // HERE - enter a multi-level mechanism
                 let e = self.main_index.get(contract_id);
                 (e.map(|a| a as *const ContractIndexElement), None)
             }
