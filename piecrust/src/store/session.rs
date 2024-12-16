@@ -253,30 +253,18 @@ impl ContractSession {
         leaf_path: impl AsRef<Path>,
         main_path: impl AsRef<Path>,
     ) -> Option<PathBuf> {
-        // println!(
-        //     "find_element commit={:?} leaf_path={:?} main_path={:?}",
-        //     commit.as_ref().map(|a| hex::encode(a.as_bytes())),
-        //     leaf_path.as_ref(),
-        //     main_path.as_ref()
-        // );
         if let Some(hash) = commit {
             let hash_hex = hex::encode(hash.as_bytes());
             let path = leaf_path.as_ref().join(&hash_hex).join(ELEMENT_FILE);
             if path.is_file() {
-                // println!("find_element SOME");
                 Some(path)
             } else {
                 let base_info_path =
                     main_path.as_ref().join(hash_hex).join(BASE_FILE);
-                let r = base_from_path(base_info_path).ok();
-                // if r.is_none() {
-                //     println!("find_element NONE 1");
-                // }
-                let index = r?;
+                let index = base_from_path(base_info_path).ok()?;
                 Self::find_element(index.maybe_base, leaf_path, main_path)
             }
         } else {
-            // println!("find_element NONE 2");
             None
         }
     }
@@ -333,23 +321,25 @@ impl ContractSession {
                                             match page_indices
                                                 .contains(&page_index)
                                             {
-                                                true => Some(
-                                                    Self::find_page(
-                                                        page_index,
-                                                        commit_id,
-                                                        &memory_path,
-                                                        &base_dir,
-                                                    )
-                                                    .unwrap_or(
-                                                        Self::find_file_path_at_level(
-                                                            &memory_dir,
-                                                            level,
-                                                            &contract_hex,
-                                                            format!("{}", page_index),
-                                                            &levels,
+                                                true => {
+                                                    Some(
+                                                        Self::find_page(
+                                                            page_index,
+                                                            commit_id,
+                                                            &memory_path,
+                                                            &base_dir,
                                                         )
-                                                    ),
-                                                ),
+                                                            .unwrap_or(
+                                                                Self::find_file_path_at_level(
+                                                                    &memory_dir,
+                                                                    level,
+                                                                    &contract_hex,
+                                                                    format!("{}", page_index),
+                                                                    &levels,
+                                                                )
+                                                            ),
+                                                    )
+                                                },
                                                 false => None,
                                             }
                                         },

@@ -313,6 +313,15 @@ impl ContractIndexElement {
         self.page_indices.insert(page_index);
         self.tree.insert(page_index_u64, page_hash);
     }
+
+    pub fn display_page_indices_and_root(&self, contract_id: &ContractId) {
+        println!(
+            "XXINDEX page_indices={:?} root={} for contract {}",
+            self.page_indices,
+            hex::encode(self.tree.root().as_bytes()),
+            hex::encode(contract_id.as_bytes())
+        );
+    }
 }
 
 impl Default for NewContractIndex {
@@ -362,6 +371,12 @@ impl NewContractIndex {
         &self,
     ) -> impl Iterator<Item = (&ContractId, &ContractIndexElement)> {
         self.inner_contracts.iter()
+    }
+
+    pub fn move_into(self, target: &mut Self) {
+        for (contract_id, element) in self.inner_contracts.into_iter() {
+            target.insert_contract_index(&contract_id, element);
+        }
     }
 }
 

@@ -103,20 +103,17 @@ impl CommitStore {
     }
 
     pub fn level_for_commit(&self) -> u64 {
-        println!("UUM level_for_new_commit: {}", self.current_level);
         self.current_level
     }
 
     pub fn level_for_finalize(&mut self) -> u64 {
         self.current_level += 1;
         self.levels.insert(self.current_level);
-        println!("UUM level_for_finalize: {}", self.current_level);
         self.current_level
     }
 
     pub fn set_current_level(&mut self, level: u64) {
         self.levels.insert(level);
-        println!("UUM set_current_level: {}", level);
         self.current_level = level;
     }
 
@@ -164,6 +161,7 @@ impl CommitStore {
                 (e.map(|a| a as *const ContractIndexElement), commit.base)
             }
             None => {
+                println!("READING FROM MAIN INDEX1");
                 let e = self.main_index.get(contract_id);
                 (e.map(|a| a as *const ContractIndexElement), None)
             }
@@ -181,6 +179,8 @@ impl CommitStore {
                 (e.map(|a| a as *mut ContractIndexElement), commit.base)
             }
             None => {
+                println!("READING FROM MAIN INDEX2");
+                // HERE - enter a multi-level mechanism
                 let e = self.main_index.get_mut(contract_id);
                 (e.map(|a| a as *mut ContractIndexElement), None)
             }
@@ -196,8 +196,18 @@ impl CommitStore {
     }
 
     pub fn remove_commit(&mut self, hash: &Hash) {
-        self.commits.remove(hash);
+        if let Some(commit) = self.commits.remove(hash) {
+            commit.index.move_into(&mut self.main_index);
+        }
     }
+
+    // pub fn insert_main_index(
+    //     &mut self,
+    //     contract_id: &ContractId,
+    //     element: ContractIndexElement,
+    // ) {
+    //     self.main_index.insert_contract_index(contract_id, element);
+    // }
 }
 
 impl ContractStore {
@@ -357,8 +367,6 @@ fn read_all_commits<P: AsRef<Path>>(
     let root_dir = root_dir.join(MAIN_DIR);
     fs::create_dir_all(&root_dir)?;
 
-    println!("UUM reading all commits - begin");
-
     let mut max_level = 0u64;
 
     // important: level 0 is always needed
@@ -403,8 +411,6 @@ fn read_all_commits<P: AsRef<Path>>(
         commit_store.lock().unwrap().add_levels(&scanned_levels);
     }
     commit_store.lock().unwrap().set_current_level(max_level);
-
-    println!("UUM reading all commits - end");
 
     Ok(())
 }
@@ -836,7 +842,7 @@ impl Commit {
         }
         let (element, contracts_merkle) =
             self.element_and_merkle_mut(&contract_id);
-        let element = element.unwrap();
+        let element = element.unwrap(); // todo: unwrap
 
         element.set_len(memory.current_len);
 
@@ -849,6 +855,7 @@ impl Commit {
             );
         }
 
+        // element.display_page_indices_and_root(&contract_id);
         let root = *element.tree().root();
         let pos = position_from_contract(&contract_id);
         let internal_pos = contracts_merkle.insert(pos, root);
@@ -1014,9 +1021,7 @@ fn sync_loop<P: AsRef<Path>>(
                 let mut commit_store = commit_store.lock().unwrap();
                 let target_level = commit_store.level_for_finalize();
                 let levels = commit_store.get_levels();
-                println!("UUM levels={:?}", levels);
                 let levels_to_remove = commit_store.remove_levels();
-                println!("UUM levels_to_remove={:?}", levels_to_remove);
                 if let Some(commit) = commit_store.get_commit(&root) {
                     tracing::trace!(
                         "finalizing commit proper started {}",
@@ -1157,7 +1162,6 @@ fn write_commit<P: AsRef<Path>>(
         }
         commit_store_guard.level_for_commit()
     };
-    println!("UUM writing commit at level {}", level);
     base_info.level = level;
     commit.level = level;
 
@@ -1338,7 +1342,6 @@ fn copy_file_to_level(
     let dst_dir = level_dir.join(contract_id_str.as_ref());
     fs::create_dir_all(&dst_dir)?;
     let copy_dst = dst_dir.join(filename.as_ref());
-    println!("UUM LEVEL copy {:?} to {:?}", src_path.as_ref(), copy_dst);
     fs::copy(src_path.as_ref(), copy_dst).map(|_| ())
 }
 
@@ -1347,7 +1350,6 @@ fn squash_levels(
     l1: u64,
     l2: u64,
 ) -> io::Result<()> {
-    println!("UUXX squash_levels {} {}", l1, l2);
     if l1 < 1 || l1 <= l2 {
         return Ok(());
     }
@@ -1371,27 +1373,19 @@ fn squash_levels(
             if !src_file_path.is_file() {
                 continue;
             }
-            println!(
-                "UUXX squash_levels - renaming {:?} to {:?}",
-                src_file_path,
-                dst_dir_path.join(inner_entry.file_name())
-            );
             fs::create_dir_all(&dst_dir_path)?;
             fs::rename(
                 src_file_path,
                 dst_dir_path.join(inner_entry.file_name()),
             )?;
         }
-        println!("UUXX removing dir {:?}", &src_dir_path);
         fs::remove_dir(&src_dir_path)?;
     }
-    println!("UUXX removing big dir {:?}", &src_dir);
     fs::remove_dir(&src_dir)?;
     Ok(())
 }
 
 fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
-    println!("UUXX remove_levels {:?}", &levels);
     let mut lvls: Vec<u64> = levels.into();
     lvls.sort();
     lvls.reverse();
