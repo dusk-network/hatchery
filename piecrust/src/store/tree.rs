@@ -93,6 +93,76 @@ impl NewContractIndex {
     }
 }
 
+#[derive(Debug, Default, Clone, Archive, Deserialize, Serialize)]
+#[archive_attr(derive(CheckBytes))]
+pub struct LeveledContractIndex {
+    elements: BTreeMap<(ContractId, u64), ContractIndexElement>,
+}
+
+impl LeveledContractIndex {
+    pub fn new() -> Self {
+        Self {
+            elements: BTreeMap::new(),
+        }
+    }
+
+    pub fn get(
+        &self,
+        contract: &ContractId,
+        level: u64,
+        levels: &[u64], /* sorted ascending */
+    ) -> Option<&ContractIndexElement> {
+        for l in levels.iter().rev() {
+            if *l > level {
+                continue;
+            }
+            if let Some(element) = self.elements.get(&(*contract, *l)) {
+                return Some(element);
+            }
+        }
+        None
+    }
+
+    fn find_top_level(
+        &self,
+        contract: &ContractId,
+        level: u64,
+        levels: &[u64], /* sorted ascending */
+    ) -> Option<u64> {
+        for l in levels.iter().rev() {
+            if *l > level {
+                continue;
+            }
+            if self.elements.contains_key(&(*contract, *l)) {
+                return Some(*l);
+            }
+        }
+        None
+    }
+
+    pub fn get_mut(
+        &mut self,
+        contract: &ContractId,
+        level: u64,
+        levels: &[u64], /* sorted ascending */
+    ) -> Option<&mut ContractIndexElement> {
+        self.find_top_level(contract, level, levels).map(|l| {
+            self.elements
+                .get_mut(&(*contract, l))
+                .expect("element should exist")
+        })
+    }
+
+    pub fn insert_contract_index(
+        &mut self,
+        contract_id: &ContractId,
+        element: ContractIndexElement,
+        level: u64,
+    ) {
+        self.elements.insert((*contract_id, level), element);
+    }
+}
+
 #[derive(Debug, Clone, Archive, Deserialize, Serialize)]
 #[archive_attr(derive(CheckBytes))]
 pub struct ContractsMerkle {
@@ -373,9 +443,25 @@ impl NewContractIndex {
         self.inner_contracts.iter()
     }
 
-    pub fn move_into(self, target: &mut Self) {
+    pub fn move_into(
+        self,
+        target: &mut LeveledContractIndex,
+        level: u64,
+        target_level: u64,
+        levels: &[u64],
+    ) {
         for (contract_id, element) in self.inner_contracts.into_iter() {
-            target.insert_contract_index(&contract_id, element);
+            if let Some(existing_element) =
+                target.get(&contract_id, level, levels)
+            {
+                // if element exists, we need to preserve it at target level
+                target.insert_contract_index(
+                    &contract_id,
+                    existing_element.clone(),
+                    target_level,
+                );
+            }
+            target.insert_contract_index(&contract_id, element, level);
         }
     }
 }

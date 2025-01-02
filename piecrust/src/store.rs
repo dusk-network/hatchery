@@ -34,7 +34,7 @@ use tree::{Hash, NewContractIndex};
 use crate::store::commit::Hulk;
 use crate::store::tree::{
     position_from_contract, BaseInfo, ContractIndexElement, ContractsMerkle,
-    TreePos,
+    LeveledContractIndex, TreePos,
 };
 pub use bytecode::Bytecode;
 pub use memory::{Memory, PAGE_SIZE};
@@ -78,7 +78,7 @@ impl Debug for ContractStore {
 #[derive(Debug)]
 pub struct CommitStore {
     commits: BTreeMap<Hash, Commit>,
-    main_index: NewContractIndex,
+    main_index: LeveledContractIndex,
     current_level: u64,
     levels: BTreeSet<u64>,
 }
@@ -87,7 +87,7 @@ impl CommitStore {
     pub fn new() -> Self {
         Self {
             commits: BTreeMap::new(),
-            main_index: NewContractIndex::new(),
+            main_index: LeveledContractIndex::new(),
             current_level: 0,
             levels: BTreeSet::new(),
         }
@@ -154,6 +154,7 @@ impl CommitStore {
         &self,
         hash: &Hash,
         contract_id: &ContractId,
+        level: u64,
     ) -> (Option<*const ContractIndexElement>, Option<Hash>) {
         match self.commits.get(hash) {
             Some(commit) => {
@@ -163,7 +164,8 @@ impl CommitStore {
             None => {
                 println!("READING FROM MAIN INDEX1");
                 // HERE - enter a multi-level mechanism
-                let e = self.main_index.get(contract_id);
+                let e =
+                    self.main_index.get(contract_id, level, &self.get_levels());
                 (e.map(|a| a as *const ContractIndexElement), None)
             }
         }
@@ -173,6 +175,7 @@ impl CommitStore {
         &mut self,
         hash: &Hash,
         contract_id: &ContractId,
+        level: u64,
     ) -> (Option<*mut ContractIndexElement>, Option<Hash>) {
         match self.commits.get_mut(hash) {
             Some(commit) => {
@@ -182,7 +185,11 @@ impl CommitStore {
             None => {
                 println!("READING FROM MAIN INDEX2");
                 // HERE - enter a multi-level mechanism
-                let e = self.main_index.get_mut(contract_id);
+                let e = self.main_index.get_mut(
+                    contract_id,
+                    level,
+                    &self.get_levels(),
+                );
                 (e.map(|a| a as *mut ContractIndexElement), None)
             }
         }
@@ -196,10 +203,21 @@ impl CommitStore {
         self.commits.keys()
     }
 
-    pub fn remove_commit(&mut self, hash: &Hash) {
+    pub fn remove_commit(&mut self, hash: &Hash, target_level: u64) {
         if let Some(commit) = self.commits.remove(hash) {
-            commit.index.move_into(&mut self.main_index);
+            let levels = self.get_levels();
+            commit.index.move_into(
+                &mut self.main_index,
+                commit.level,
+                target_level,
+                &levels,
+            );
         }
+    }
+
+    // todo: make sure this is ok and rename
+    pub fn remove_commit2(&mut self, hash: &Hash) {
+        self.commits.remove(hash);
     }
 
     // pub fn insert_main_index(
@@ -885,6 +903,7 @@ impl Commit {
             *contract_id,
             self.commit_store.clone(),
             self.base,
+            self.level,
         )
         .map(|a| unsafe { &*a })
     }
@@ -899,6 +918,7 @@ impl Commit {
                 *contract_id,
                 self.commit_store.clone(),
                 self.base,
+                self.level,
             )
             .map(|a| unsafe { &mut *a }),
             &mut self.contracts_merkle,
@@ -996,7 +1016,7 @@ fn sync_loop<P: AsRef<Path>>(
                 }
 
                 let io_result = delete_commit_dir(root_dir, root);
-                commit_store.lock().unwrap().remove_commit(&root);
+                commit_store.lock().unwrap().remove_commit2(&root);
                 tracing::trace!("delete commit finished");
                 let _ = replier.send(io_result);
             }
@@ -1046,7 +1066,7 @@ fn sync_loop<P: AsRef<Path>>(
                             e
                         ),
                     }
-                    commit_store.remove_commit(&root);
+                    commit_store.remove_commit(&root, target_level);
                     tracing::trace!("finalizing commit finished");
                     let _ = replier.send(io_result);
                 } else {
@@ -1096,7 +1116,7 @@ fn sync_loop<P: AsRef<Path>>(
                                     for replier in entry.remove() {
                                         let io_result =
                                             delete_commit_dir(root_dir, base);
-                                        commit_store.lock().unwrap().remove_commit(&base);
+                                        commit_store.lock().unwrap().remove_commit2(&base);
                                         let _ = replier.send(io_result);
                                     }
                                 }

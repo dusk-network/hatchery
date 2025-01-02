@@ -18,6 +18,7 @@ impl Hulk {
         contract_id: ContractId,
         commit_store: Option<Arc<Mutex<CommitStore>>>,
         base: Option<Hash>,
+        level: u64,
     ) -> Option<*const ContractIndexElement> {
         if let Some(e) = index.get(&contract_id) {
             return Some(e);
@@ -27,7 +28,7 @@ impl Hulk {
         let commit_store = commit_store.lock().unwrap();
         loop {
             let (maybe_element, commit_base) =
-                commit_store.get_element_and_base(&base, &contract_id);
+                commit_store.get_element_and_base(&base, &contract_id, level);
             if let Some(e) = maybe_element {
                 return Some(e);
             }
@@ -40,6 +41,7 @@ impl Hulk {
         contract_id: ContractId,
         commit_store: Option<Arc<Mutex<CommitStore>>>,
         base: Option<Hash>,
+        level: u64,
     ) -> Option<*mut ContractIndexElement> {
         if let Some(e) = index.get_mut(&contract_id) {
             return Some(e);
@@ -48,8 +50,8 @@ impl Hulk {
         let commit_store = commit_store.clone()?;
         let mut commit_store = commit_store.lock().unwrap();
         loop {
-            let (maybe_element, commit_base) =
-                commit_store.get_element_and_base_mut(&base, &contract_id);
+            let (maybe_element, commit_base) = commit_store
+                .get_element_and_base_mut(&base, &contract_id, level);
             if let Some(e) = maybe_element {
                 return Some(e);
             }
