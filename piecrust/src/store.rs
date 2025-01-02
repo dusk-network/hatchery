@@ -162,7 +162,11 @@ impl CommitStore {
                 (e.map(|a| a as *const ContractIndexElement), commit.base)
             }
             None => {
-                println!("READING FROM MAIN INDEX1");
+                println!(
+                    "READING FROM MAIN INDEX1 level={} lvls={:?}",
+                    level,
+                    self.get_levels()
+                );
                 // HERE - enter a multi-level mechanism
                 let e =
                     self.main_index.get(contract_id, level, &self.get_levels());
@@ -533,12 +537,21 @@ fn commit_from_dir<P: AsRef<Path>>(
         None
     };
 
+    let (base, level) = if let Some(ref hash_hex) = commit_id {
+        let base_info_path = main_dir.join(hash_hex).join(BASE_FILE);
+        let base_info = base_from_path(base_info_path)?;
+        (base_info.maybe_base, base_info.level)
+    } else {
+        (None, 0)
+    };
+
     let (index, contracts_merkle) = index_merkle_from_path(
         main_dir,
         leaf_dir,
         &maybe_hash,
         commit_store.clone(),
         tree_pos.as_ref(),
+        level,
     )?;
     tracing::trace!("after index_merkle_from_path");
 
@@ -595,14 +608,6 @@ fn commit_from_dir<P: AsRef<Path>>(
         }
     }
 
-    let (base, level) = if let Some(ref hash_hex) = commit_id {
-        let base_info_path = main_dir.join(hash_hex).join(BASE_FILE);
-        let base_info = base_from_path(base_info_path)?;
-        (base_info.maybe_base, base_info.level)
-    } else {
-        (None, 0)
-    };
-
     Ok(Commit::new(
         index,
         contracts_merkle,
@@ -619,6 +624,7 @@ fn index_merkle_from_path(
     maybe_commit_id: &Option<Hash>,
     commit_store: Arc<Mutex<CommitStore>>,
     maybe_tree_pos: Option<&TreePos>,
+    level: u64,
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
     let leaf_dir = leaf_dir.as_ref();
 
@@ -627,18 +633,7 @@ fn index_merkle_from_path(
     let mut merkle_src1: BTreeMap<u32, (Hash, u64, ContractId)> =
         BTreeMap::new();
 
-    let (level, levels) = {
-        let commit_store = commit_store.lock().unwrap();
-        let level = match maybe_commit_id {
-            Some(commit_id) => commit_store
-                .get_commit(commit_id)
-                .map(|commit| commit.level)
-                .unwrap_or(0),
-            None => 0,
-        };
-        let levels = commit_store.get_levels();
-        (level, levels)
-    };
+    let levels = commit_store.lock().unwrap().get_levels();
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -655,6 +650,10 @@ fn index_merkle_from_path(
                 &contract_leaf_path,
                 &main_path,
             );
+            println!(
+                "LOOKING for ================> level={} contract={} in {:?}",
+                level, contract_id_hex, leaf_dir
+            );
             let element_path = match maybe_element_path {
                 None => ContractSession::find_file_path_at_level(
                     leaf_dir,
@@ -665,6 +664,7 @@ fn index_merkle_from_path(
                 ),
                 Some(p) => p,
             };
+            println!("LOOKING end ==========> {:?}", element_path);
             if element_path.is_file() {
                 let element_bytes = fs::read(&element_path)?;
                 let element: ContractIndexElement =
@@ -1016,6 +1016,7 @@ fn sync_loop<P: AsRef<Path>>(
                 }
 
                 let io_result = delete_commit_dir(root_dir, root);
+                println!("REMOVECOMMIT2 - COMMIT DELETE");
                 commit_store.lock().unwrap().remove_commit2(&root);
                 tracing::trace!("delete commit finished");
                 let _ = replier.send(io_result);
@@ -1116,6 +1117,7 @@ fn sync_loop<P: AsRef<Path>>(
                                     for replier in entry.remove() {
                                         let io_result =
                                             delete_commit_dir(root_dir, base);
+                                        println!("REMOVECOMMIT2 - SESSION DROP");
                                         commit_store.lock().unwrap().remove_commit2(&base);
                                         let _ = replier.send(io_result);
                                     }
