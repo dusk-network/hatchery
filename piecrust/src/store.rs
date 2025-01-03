@@ -396,31 +396,11 @@ fn read_all_commits<P: AsRef<Path>>(
     let level_zero = [0u64];
     commit_store.lock().unwrap().add_levels(&level_zero);
 
-    for entry in fs::read_dir(&root_dir)? {
-        let entry = entry?;
-        if entry.path().is_dir() {
-            let filename = entry.file_name();
-            if filename == MEMORY_DIR
-                || filename == BYTECODE_DIR
-                || filename == LEAF_DIR
-            {
-                continue;
-            }
-            tracing::trace!("before read_commit");
-            let commit =
-                read_commit(engine, entry.path(), commit_store.clone())?;
-            tracing::trace!("before read_commit");
-            let root = *commit.root();
-            if commit.level > max_level {
-                max_level = commit.level;
-            }
-            commit_store.lock().unwrap().insert_commit(root, commit);
-        }
-    }
+    let mut scanned_levels = Vec::new();
+    scanned_levels.push(0u64);
 
     let edge_dir = root_dir.join(MEMORY_DIR).join(EDGE_DIR);
     if edge_dir.is_dir() {
-        let mut scanned_levels = Vec::new();
         for entry in fs::read_dir(edge_dir)? {
             let entry = entry?;
             let level_str = entry.file_name().to_string_lossy().to_string();
@@ -433,6 +413,34 @@ fn read_all_commits<P: AsRef<Path>>(
         }
         commit_store.lock().unwrap().add_levels(&scanned_levels);
     }
+    scanned_levels.sort();
+
+    for entry in fs::read_dir(&root_dir)? {
+        let entry = entry?;
+        if entry.path().is_dir() {
+            let filename = entry.file_name();
+            if filename == MEMORY_DIR
+                || filename == BYTECODE_DIR
+                || filename == LEAF_DIR
+            {
+                continue;
+            }
+            tracing::trace!("before read_commit");
+            let commit = read_commit(
+                engine,
+                entry.path(),
+                commit_store.clone(),
+                &scanned_levels,
+            )?;
+            tracing::trace!("before read_commit");
+            let root = *commit.root();
+            if commit.level > max_level {
+                max_level = commit.level;
+            }
+            commit_store.lock().unwrap().insert_commit(root, commit);
+        }
+    }
+
     commit_store.lock().unwrap().set_current_level(max_level);
 
     Ok(())
@@ -442,9 +450,10 @@ fn read_commit<P: AsRef<Path>>(
     engine: &Engine,
     commit_dir: P,
     commit_store: Arc<Mutex<CommitStore>>,
+    levels: &[u64],
 ) -> io::Result<Commit> {
     let commit_dir = commit_dir.as_ref();
-    let commit = commit_from_dir(engine, commit_dir, commit_store)?;
+    let commit = commit_from_dir(engine, commit_dir, commit_store, levels)?;
     Ok(commit)
 }
 
@@ -503,6 +512,7 @@ fn commit_from_dir<P: AsRef<Path>>(
     engine: &Engine,
     dir: P,
     commit_store: Arc<Mutex<CommitStore>>,
+    levels: &[u64],
 ) -> io::Result<Commit> {
     let dir = dir.as_ref();
     let mut commit_id: Option<String> = None;
@@ -549,9 +559,9 @@ fn commit_from_dir<P: AsRef<Path>>(
         main_dir,
         leaf_dir,
         &maybe_hash,
-        commit_store.clone(),
         tree_pos.as_ref(),
         level,
+        levels,
     )?;
     tracing::trace!("after index_merkle_from_path");
 
@@ -587,6 +597,7 @@ fn commit_from_dir<P: AsRef<Path>>(
         let contract_memory_dir = memory_dir.join(&contract_hex);
 
         for page_index in contract_index.page_indices() {
+            // todo: improve this check, make sure it is correct
             let main_page_path = page_path(&contract_memory_dir, *page_index);
             if !main_page_path.is_file() {
                 let path = ContractSession::find_page(
@@ -622,18 +633,17 @@ fn index_merkle_from_path(
     main_path: impl AsRef<Path>,
     leaf_dir: impl AsRef<Path>,
     maybe_commit_id: &Option<Hash>,
-    commit_store: Arc<Mutex<CommitStore>>,
     maybe_tree_pos: Option<&TreePos>,
     level: u64,
+    levels: &[u64],
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
+    println!("CALLING index_merkle_from_path leaf_dir={:?} maybe_commit={:?} level={} levels={:?}", leaf_dir.as_ref(), maybe_commit_id.as_ref().map(|a|hex::encode(a.as_bytes())), level, levels);
     let leaf_dir = leaf_dir.as_ref();
 
     let mut index: NewContractIndex = NewContractIndex::new();
     let mut merkle: ContractsMerkle = ContractsMerkle::default();
     let mut merkle_src1: BTreeMap<u32, (Hash, u64, ContractId)> =
         BTreeMap::new();
-
-    let levels = commit_store.lock().unwrap().get_levels();
 
     for entry in fs::read_dir(leaf_dir)? {
         let entry = entry?;
@@ -651,8 +661,8 @@ fn index_merkle_from_path(
                 &main_path,
             );
             println!(
-                "LOOKING for ================> level={} contract={} in {:?}",
-                level, contract_id_hex, leaf_dir
+                "LOOKING for ================> level={} contract={} in {:?} with levels={:?}",
+                level, contract_id_hex, leaf_dir, levels
             );
             let element_path = match maybe_element_path {
                 None => ContractSession::find_file_path_at_level(
@@ -660,7 +670,7 @@ fn index_merkle_from_path(
                     level,
                     &contract_id_hex,
                     ELEMENT_FILE,
-                    &levels,
+                    levels,
                 ),
                 Some(p) => p,
             };
@@ -702,7 +712,7 @@ fn index_merkle_from_path(
                 merkle.insert_with_int_pos(*pos, *int_pos as u64, *hash);
                 if let Some((hh, pospos, cid)) = merkle_src1.get(int_pos) {
                     if *hash != *hh {
-                        println!("DISCREPANCY hashes not equal at int pos={} contract={}", int_pos, hex::encode(cid.as_bytes()));
+                        println!("DISCREPANCY hashes not equal at int pos={} contract={} {} != {}", int_pos, hex::encode(cid.as_bytes()), hex::encode((*hash).as_bytes()), hex::encode((*hh).as_bytes()));
                     }
                     if pos != pospos {
                         println!("DISCREPANCY pos not equal at int pos={} orig={} src1={}", int_pos, pos, pospos);
