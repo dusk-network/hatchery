@@ -30,7 +30,7 @@ and, the directory will contain the following files:
 
 ### Another Commit
 
-When can then start a new session using `root_1` as a base commit, and make some
+We can then start a new session using `root_1` as a base commit, and make some
 modifications to the state by performing transactions. Let's say that we made
 some modifications to `contract_1`'s first memory page, and deploy a new
 contract with identifier `contract_3`. We can then commit to those changes

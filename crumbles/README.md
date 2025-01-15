@@ -8,7 +8,7 @@ Crumbles is a Rust library designed for creating and managing copy-on-write memo
 
 ## Usage
 
-The core fuctionality of Crumbles is provided by the `Mmap` struct. This struct offers methods to manage memory regions, create snapshots and revert/apply changes.
+The core functionality of Crumbles is provided by the `Mmap` struct. This struct offers methods to manage memory regions, create snapshots and revert/apply changes.
 
 Add `crumbles` as a dependency to your contract project:
 ```sh

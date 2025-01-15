@@ -15,7 +15,7 @@
 
 The project is organized as follows:
 
-- `contracts`: Contains a number of example smart contracts that can be ran against the `piecrust` virtual machine.
+- `contracts`: Contains a number of example smart contracts that can be run against the `piecrust` virtual machine.
 - `piecrust`: Contains the source code and README for the WASM virtual machine.
 - `piecrust-uplink`: Contains the source code and README for the smart contract development kit.
 
