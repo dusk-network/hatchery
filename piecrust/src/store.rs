@@ -102,10 +102,16 @@ impl CommitStore {
         self.commits.get(hash)
     }
 
-    pub fn level_for_commit(&self) -> u64 {
+    // todo: maybe merge level_for_commit and level_for_finalize to just
+    // next_level
+    pub fn level_for_commit(&mut self) -> u64 {
+        // self.current_level += 1;
+        // self.levels.insert(self.current_level);
         self.current_level
     }
 
+    // todo: maybe merge level_for_commit and level_for_finalize to just
+    // next_level
     pub fn level_for_finalize(&mut self) -> u64 {
         self.current_level += 1;
         self.levels.insert(self.current_level);
@@ -1208,6 +1214,14 @@ fn write_commit<P: AsRef<Path>>(
     println!("write commit =====================================================================================");
     let mut commit =
         base.unwrap_or(Commit::from(&commit_store, base_info.maybe_base, 0));
+
+    let (level, levels) = {
+        let mut guard = commit_store.lock().unwrap();
+        (guard.level_for_commit(), guard.get_levels())
+    };
+    base_info.level = level;
+    commit.level = level;
+
     for (contract_id, contract_data) in &commit_contracts {
         if contract_data.is_new {
             commit.remove_and_insert(*contract_id, &contract_data.memory);
@@ -1227,7 +1241,7 @@ fn write_commit<P: AsRef<Path>>(
     commit.maybe_hash = Some(root);
     commit.base = base_info.maybe_base;
 
-    let level = {
+    {
         let commit_store_guard = commit_store.lock().unwrap();
         if commit_store_guard.contains_key(&root) {
             // Don't write the commit if it already exists on disk. This may
@@ -1235,16 +1249,21 @@ fn write_commit<P: AsRef<Path>>(
             // commit for example.
             return Ok(root);
         }
-        commit_store_guard.level_for_commit()
-    };
-    base_info.level = level;
-    commit.level = level;
+    }
 
-    write_commit_inner(root_dir, &commit, commit_contracts, root_hex, base_info)
-        .map(|_| {
-            commit_store.lock().unwrap().insert_commit(root, commit);
-            root
-        })
+    let result = write_commit_inner(
+        root_dir,
+        &commit,
+        commit_contracts,
+        root_hex,
+        base_info,
+    )
+    .map(|_| {
+        commit_store.lock().unwrap().insert_commit(root, commit);
+        root
+    });
+    println!("write commit finished ============= level={} ===== lvls={:?}==============================================================", level, levels);
+    result
 }
 
 /// Writes a commit to disk.
