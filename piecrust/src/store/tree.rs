@@ -4,15 +4,19 @@
 //
 // Copyright (c) DUSK NETWORK. All rights reserved.
 
+use std::fs::create_dir_all;
 use std::{
     cell::Ref,
     collections::{BTreeMap, BTreeSet},
+    fs,
 };
 
+use crate::store::{EDGE_DIR, ELEMENT_FILE, LEAF_DIR, MAIN_DIR};
 use bytecheck::CheckBytes;
 use piecrust_uplink::ContractId;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::io::{self, ErrorKind, Read, Write};
+use std::path::Path;
 
 // There are max `2^16` pages in a 32-bit memory
 const P32_HEIGHT: usize = 8;
@@ -159,6 +163,12 @@ impl LeveledContractIndex {
         element: ContractIndexElement,
         level: u64,
     ) {
+        println!(
+            "LeveledContractIndex insert contract={} elem hash={:?} level={}",
+            hex::encode(contract_id.as_bytes()),
+            element.hash().as_ref().map(|a| hex::encode(a.as_bytes())),
+            level
+        );
         self.elements.insert((*contract_id, level), element);
     }
 }
@@ -443,13 +453,40 @@ impl NewContractIndex {
         self.inner_contracts.iter()
     }
 
+    // todo: this method belongs in 'store' as it uses the file system
+    fn write_element_to_file(
+        root_dir: impl AsRef<Path>,
+        level: u64,
+        element: &ContractIndexElement,
+        contract_id: &ContractId,
+    ) -> io::Result<()> {
+        let main_dir = root_dir.as_ref().join(MAIN_DIR);
+        let element_dir_path = main_dir
+            .join(LEAF_DIR)
+            .join(EDGE_DIR)
+            .join(format!("{}", level))
+            .join(hex::encode(contract_id.as_bytes()));
+        let element_file_path = element_dir_path.join(ELEMENT_FILE);
+        create_dir_all(element_dir_path)?;
+        let element_bytes =
+            rkyv::to_bytes::<_, 128>(element).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed serializing element file: {err}"),
+                )
+            })?;
+        fs::write(element_file_path, element_bytes)
+    }
+
+    // todo: this method belongs in 'store' as it uses the file system
     pub fn move_into(
         self,
+        root_dir: impl AsRef<Path>,
         target: &mut LeveledContractIndex,
         level: u64,
         target_level: u64,
         levels: &[u64],
-    ) {
+    ) -> io::Result<()> {
         for (contract_id, element) in self.inner_contracts.into_iter() {
             if let Some(existing_element) =
                 target.get(&contract_id, level, levels)
@@ -461,8 +498,29 @@ impl NewContractIndex {
                     target_level,
                 );
             }
-            target.insert_contract_index(&contract_id, element, level);
+            if let Some(existing_element) =
+                target.get(&contract_id, level, levels)
+            {
+                // write existing_element as file at
+                // main/leaf/edge/<target_level>/<contract_id>/element
+                Self::write_element_to_file(
+                    root_dir.as_ref(),
+                    target_level,
+                    existing_element,
+                    &contract_id,
+                )?;
+            }
+            target.insert_contract_index(&contract_id, element.clone(), level);
+            // write element as file at
+            // leaf/edge/<target_level>/<contract_id>/element
+            Self::write_element_to_file(
+                root_dir.as_ref(),
+                level,
+                &element,
+                &contract_id,
+            )?;
         }
+        Ok(())
     }
 }
 

@@ -207,16 +207,23 @@ impl CommitStore {
         self.commits.keys()
     }
 
-    pub fn remove_commit(&mut self, hash: &Hash, target_level: u64) {
+    pub fn remove_commit(
+        &mut self,
+        hash: &Hash,
+        root_dir: impl AsRef<Path>,
+        target_level: u64,
+    ) -> io::Result<()> {
         if let Some(commit) = self.commits.remove(hash) {
             let levels = self.get_levels();
             commit.index.move_into(
+                root_dir.as_ref(),
                 &mut self.main_index,
                 commit.level,
                 target_level,
                 &levels,
-            );
+            )?;
         }
+        Ok(())
     }
 
     // todo: make sure this is ok and rename
@@ -888,8 +895,23 @@ impl Commit {
         let root = *element.tree().root();
         let pos = position_from_contract(&contract_id);
         let internal_pos = contracts_merkle.insert(pos, root);
+        println!(
+            "elementhashset {} for contract {}",
+            hex::encode(root.as_bytes()),
+            hex::encode(contract_id.as_bytes())
+        );
         element.set_hash(Some(root));
         element.set_int_pos(Some(internal_pos));
+    }
+
+    pub fn get_inner_contracts(&self) -> Vec<String> {
+        let v = self
+            .index
+            .contracts()
+            .keys()
+            .map(|k| hex::encode(k.as_bytes()))
+            .collect();
+        v
     }
 
     pub fn remove_and_insert(&mut self, contract: ContractId, memory: &Memory) {
@@ -1068,20 +1090,33 @@ fn sync_loop<P: AsRef<Path>>(
                         &levels_to_remove,
                     );
                     match &io_result {
-                        Ok(_) => tracing::trace!(
+                        Ok(_) => tracing::info!(
                             "finalizing commit proper finished: {:?}",
                             hex::encode(root.as_bytes())
                         ),
-                        Err(e) => tracing::trace!(
+                        Err(e) => tracing::info!(
                             "finalizing commit proper failed {:?}",
                             e
                         ),
                     }
-                    commit_store.remove_commit(&root, target_level);
-                    tracing::trace!("finalizing commit finished");
+                    let io_result = commit_store.remove_commit(
+                        &root,
+                        root_dir,
+                        target_level,
+                    );
+                    match &io_result {
+                        Ok(_) => tracing::info!(
+                            "removing commit finished: {:?}",
+                            hex::encode(root.as_bytes())
+                        ),
+                        Err(e) => {
+                            tracing::info!("removing commit failed {:?}", e)
+                        }
+                    }
+                    tracing::info!("finalizing commit finished");
                     let _ = replier.send(io_result);
                 } else {
-                    tracing::trace!("finalizing commit finished");
+                    tracing::info!("finalizing commit finished");
                     let _ = replier.send(Ok(()));
                 }
             }
@@ -1170,6 +1205,7 @@ fn write_commit<P: AsRef<Path>>(
     //     maybe_hash: base.as_ref().and_then(|base| base.maybe_hash),
     // };
 
+    println!("write commit =====================================================================================");
     let mut commit =
         base.unwrap_or(Commit::from(&commit_store, base_info.maybe_base, 0));
     for (contract_id, contract_data) in &commit_contracts {
@@ -1180,8 +1216,14 @@ fn write_commit<P: AsRef<Path>>(
         }
     }
 
+    println!("inner contracts={:?}", commit.get_inner_contracts());
     let root = *commit.root();
     let root_hex = hex::encode(root);
+    println!(
+        "write commit {} ============ merkle size={}",
+        root_hex,
+        commit.contracts_merkle.len()
+    );
     commit.maybe_hash = Some(root);
     commit.base = base_info.maybe_base;
 
@@ -1324,9 +1366,33 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
     let f = OpenOptions::new()
         .append(true)
         .create(true)
-        .open(tree_pos_opt_path)?;
+        .open(&tree_pos_opt_path)?;
     let mut buf_f = BufWriter::new(f);
     commit.contracts_merkle.tree_pos().marshall(&mut buf_f)?;
+    println!(
+        "treepos written at {:?} with contracts {:?} size={} pairs={:?}",
+        tree_pos_opt_path,
+        base_info
+            .contract_hints
+            .iter()
+            .map(|cid| hex::encode(cid.as_bytes()))
+            .collect::<Vec<_>>(),
+        commit
+            .contracts_merkle
+            .tree_pos()
+            .iter()
+            .map(|_| 1)
+            .sum::<u32>(),
+        commit
+            .contracts_merkle
+            .tree_pos()
+            .iter()
+            .map(|(a, (h, b))| (
+                a,
+                (hex::encode(h.as_bytes()), hex::encode(b.to_le_bytes()))
+            ))
+            .collect::<Vec<_>>()
+    );
 
     Ok(())
 }
@@ -1366,6 +1432,7 @@ fn copy_file_to_level(
     filename: impl AsRef<str>,
 ) -> io::Result<()> {
     if !src_path.as_ref().is_file() {
+        println!("not a file {:?} - skipping copying", src_path.as_ref());
         return Ok(());
     }
     let level_dir = main_dir
@@ -1375,6 +1442,7 @@ fn copy_file_to_level(
     let dst_dir = level_dir.join(contract_id_str.as_ref());
     fs::create_dir_all(&dst_dir)?;
     let copy_dst = dst_dir.join(filename.as_ref());
+    println!("copied {:?} to {:?}", src_path.as_ref(), &copy_dst);
     fs::copy(src_path.as_ref(), copy_dst).map(|_| ())
 }
 
@@ -1430,6 +1498,28 @@ fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
     Ok(())
 }
 
+fn element_file_hash(path: impl AsRef<Path>) -> io::Result<String> {
+    let path = path.as_ref();
+    if path.is_file() {
+        let element_bytes = fs::read(path)?;
+        let element: ContractIndexElement = rkyv::from_bytes(&element_bytes)
+            .map_err(|err| {
+                tracing::trace!("deserializing element file failed {}", err);
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid element file \"{path:?}\": {err}"),
+                )
+            })?;
+        if let Some(h) = element.hash().as_ref().map(hex::encode) {
+            Ok(format!("{:?}", h))
+        } else {
+            Ok("NO HASH".to_string())
+        }
+    } else {
+        Ok("NOT A FILE".to_string())
+    }
+}
+
 /// Finalize commit
 fn finalize_commit<P: AsRef<Path>>(
     root: Hash,
@@ -1441,6 +1531,7 @@ fn finalize_commit<P: AsRef<Path>>(
 ) -> io::Result<()> {
     let main_dir = root_dir.as_ref().join(MAIN_DIR);
     let commit_id_str = hex::encode(root);
+    println!("finalizing commit {} at level={} target level={} levels={:?} ===========", commit_id_str, commit_level, target_level, levels);
     let commit_path = main_dir.join(&commit_id_str);
     let base_info_path = commit_path.join(BASE_FILE);
     let tree_pos_path = commit_path.join(TREE_POS_FILE);
@@ -1494,7 +1585,18 @@ fn finalize_commit<P: AsRef<Path>>(
                 &contract_hex,
                 ELEMENT_FILE,
             )?;
-            fs::rename(src_leaf_file_path, dst_leaf_file_path)?;
+            println!(
+                "overwriting {:?} having hash {}",
+                dst_leaf_file_path,
+                element_file_hash(&dst_leaf_file_path)?
+            );
+            println!(
+                "       with {:?} having hash {} commit_level={}",
+                src_leaf_file_path,
+                element_file_hash(&src_leaf_file_path)?,
+                commit_level
+            );
+            fs::rename(&src_leaf_file_path, &dst_leaf_file_path)?;
         }
         fs::remove_dir(src_leaf_path)?;
     }
@@ -1505,6 +1607,8 @@ fn finalize_commit<P: AsRef<Path>>(
     let _ = fs::remove_file(tree_pos_path);
     let _ = fs::remove_file(tree_pos_opt_path);
     fs::remove_dir(commit_path)?;
+
+    println!("finalizing commit {} done", commit_id_str);
 
     Ok(())
 }

@@ -95,9 +95,15 @@ impl ContractSession {
         let mut commit = self
             .base
             .as_ref()
-            .map(|c| c.fast_clone(&mut self.contracts.keys()))
+            .cloned()
+            // .map(|c| c.fast_clone(&mut self.contracts.keys()))
+            // .map(|c| c.clone())
             .unwrap_or(Commit::from(&self.commit_store, None, 0));
         for (contract, entry) in &self.contracts {
+            println!(
+                "abcdx insert from root in contract {}",
+                hex::encode(contract.as_bytes())
+            );
             commit.insert(*contract, &entry.memory);
         }
         let root = commit.root();
@@ -119,6 +125,10 @@ impl ContractSession {
             0,
         ));
         for (contract, entry) in &self.contracts {
+            println!(
+                "abcdx memory pages insert for contract {}",
+                hex::encode(contract.as_bytes())
+            );
             commit.insert(*contract, &entry.memory);
         }
 
