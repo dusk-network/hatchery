@@ -102,6 +102,14 @@ impl CommitStore {
         self.commits.get(hash)
     }
 
+    pub fn get_all_commits(&self) -> Vec<Hash> {
+        let mut v = vec![];
+        for h in self.commits.keys() {
+            v.push(*h);
+        }
+        v
+    }
+
     pub fn level_for_commit(&mut self) -> u64 {
         self.current_level
     }
@@ -1205,16 +1213,27 @@ fn write_commit<P: AsRef<Path>>(
     //     maybe_hash: base.as_ref().and_then(|base| base.maybe_hash),
     // };
 
-    println!("write commit =====================================================================================");
     let mut commit =
         base.unwrap_or(Commit::from(&commit_store, base_info.maybe_base, 0));
 
-    let (level, levels) = {
+    let (level, levels, all_commits) = {
         let mut guard = commit_store.lock().unwrap();
-        (guard.level_for_commit(), guard.get_levels())
+        (
+            guard.level_for_commit(),
+            guard.get_levels(),
+            guard.get_all_commits(),
+        )
     };
     base_info.level = level;
     commit.level = level;
+    println!("write commit ===================== level={} ================================================================", level);
+    println!(
+        "all commits={:?}",
+        all_commits
+            .iter()
+            .map(|h| hex::encode(h.as_bytes()))
+            .collect::<Vec<_>>()
+    );
 
     for (contract_id, contract_data) in &commit_contracts {
         if contract_data.is_new {
