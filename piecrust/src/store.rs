@@ -102,16 +102,10 @@ impl CommitStore {
         self.commits.get(hash)
     }
 
-    // todo: maybe merge level_for_commit and level_for_finalize to just
-    // next_level
     pub fn level_for_commit(&mut self) -> u64 {
-        // self.current_level += 1;
-        // self.levels.insert(self.current_level);
         self.current_level
     }
 
-    // todo: maybe merge level_for_commit and level_for_finalize to just
-    // next_level
     pub fn level_for_finalize(&mut self) -> u64 {
         self.current_level += 1;
         self.levels.insert(self.current_level);
