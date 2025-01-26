@@ -646,7 +646,12 @@ fn commit_from_dir<P: AsRef<Path>>(
                     &contract_memory_dir,
                     main_dir,
                 );
-                let found = path.map(|p| p.is_file()).unwrap_or(false);
+                println!("find_page returned {:?}", path);
+                let mut found = path.map(|p| p.is_file()).unwrap_or(false);
+                if !found {
+                    // last resort - main/MEMORY/<contract>/<page_index>
+                    found = contract_memory_dir.join(format!("{}", page_index)).is_file();
+                }
                 if !found {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1379,6 +1384,7 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
 
     tracing::trace!("persisting index started");
     for (contract_id, element) in commit.index.iter() {
+        println!("write_commit {} contract {}", commit_id.as_ref(), hex::encode(contract_id.as_bytes()));
         if commit_contracts.contains_key(contract_id) {
             let element_dir_path = directories
                 .leaf_main_dir
@@ -1393,6 +1399,7 @@ fn write_commit_inner<P: AsRef<Path>, S: AsRef<str>>(
                         format!("Failed serializing element file: {err}"),
                     )
                 })?;
+            println!("write_element at {:?}", element_file_path);
             fs::write(&element_file_path, element_bytes)?;
         }
     }
@@ -1473,6 +1480,7 @@ fn delete_commit_dir<P: AsRef<Path>>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn copy_file_to_level(
     src_path: impl AsRef<Path>,
     main_dir: impl AsRef<Path>,
@@ -1547,6 +1555,7 @@ fn remove_levels(main_dir: impl AsRef<Path>, levels: &[u64]) -> io::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn element_file_hash(path: impl AsRef<Path>) -> io::Result<String> {
     let path = path.as_ref();
     if path.is_file() {
@@ -1605,17 +1614,20 @@ fn finalize_commit<P: AsRef<Path>>(
                     &contract_hex,
                     &filename,
                 )?;
-                copy_file_to_level(
-                    &dst_file_path,
+                let dst0_file_path = ContractSession::file_path_at_level(
                     &mem_path,
-                    target_level,
+                    0,
                     &contract_hex,
                     &filename,
                 )?;
-                println!(
-                    "overwriting {:?} with {:?}",
-                    dst_file_path, src_file_path,
-                );
+                fs::copy(&dst_file_path, dst0_file_path)?; //note: this is a bug in existing version - read commit relies on finalized commits for non finalized ones, for pages which were not dirty
+                let dst1_file_path = ContractSession::file_path_at_level(
+                    &mem_path,
+                    1,
+                    &contract_hex,
+                    &filename,
+                )?;
+                fs::copy(&dst_file_path, dst1_file_path)?; //note: this is a bug in existing version - read commit relies on finalized commits for non finalized ones, for pages which were not dirty
                 println!("xren {:?} to {:?}", src_file_path, dst_file_path);
                 fs::rename(src_file_path, dst_file_path)?;
             }
@@ -1631,24 +1643,20 @@ fn finalize_commit<P: AsRef<Path>>(
                 &contract_hex,
                 ELEMENT_FILE,
             )?;
-            copy_file_to_level(
-                &dst_leaf_file_path,
+            let dst1_leaf_file_path = ContractSession::file_path_at_level(
                 &leaf_path,
-                target_level,
+                1,
                 &contract_hex,
                 ELEMENT_FILE,
             )?;
-            println!(
-                "overwriting {:?} having hash {}",
-                dst_leaf_file_path,
-                element_file_hash(&dst_leaf_file_path)?
-            );
-            println!(
-                "       with {:?} having hash {} commit_level={}",
-                src_leaf_file_path,
-                element_file_hash(&src_leaf_file_path)?,
-                commit_level
-            );
+            fs::copy(&dst_leaf_file_path, dst1_leaf_file_path)?; //note: this is a bug in existing version - read commit relies on finalized commits for non finalized ones, for pages which were not dirty
+            let dst0_leaf_file_path = ContractSession::file_path_at_level(
+                &leaf_path,
+                0,
+                &contract_hex,
+                ELEMENT_FILE,
+            )?;
+            fs::copy(&dst_leaf_file_path, dst0_leaf_file_path)?; //note: this is a bug in existing version - read commit relies on finalized commits for non finalized ones, for pages which were not dirty
             fs::rename(&src_leaf_file_path, &dst_leaf_file_path)?;
         }
         fs::remove_dir(src_leaf_path)?;
@@ -1661,7 +1669,7 @@ fn finalize_commit<P: AsRef<Path>>(
     let _ = fs::remove_file(tree_pos_opt_path);
     fs::remove_dir(commit_path)?;
 
-    println!("finalizing commit {} done", commit_id_str);
+    println!("finalizing commit {} done ====================================================", commit_id_str);
 
     Ok(())
 }
