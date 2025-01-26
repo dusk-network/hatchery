@@ -15,7 +15,6 @@ mod session;
 mod tree;
 
 use std::cell::Ref;
-use std::cmp::min;
 use std::collections::btree_map::Entry::*;
 use std::collections::btree_map::Keys;
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +53,8 @@ const OBJECTCODE_EXTENSION: &str = "a";
 const METADATA_EXTENSION: &str = "m";
 const MAIN_DIR: &str = "main";
 const EDGE_DIR: &str = "edge";
+
+const RING_SIZE: u64 = 3;
 
 /// A store for all contract commits.
 pub struct ContractStore {
@@ -111,51 +112,54 @@ impl CommitStore {
     }
 
     pub fn level_for_commit(&mut self) -> u64 {
+        self.current_level = ((self.current_level + 1) % RING_SIZE) + 1;
         self.current_level
     }
 
     pub fn level_for_finalize(&mut self) -> u64 {
-        self.current_level += 1;
-        self.levels.insert(self.current_level);
         self.current_level
     }
 
-    pub fn set_current_level(&mut self, level: u64) {
-        self.levels.insert(level);
-        self.current_level = level;
-    }
+    // pub fn set_current_level(&mut self, level: u64) {
+    //     self.levels.insert(level);
+    //     self.current_level = level;
+    // }
 
     // todo: use with care until this is optimized
     pub fn get_levels(&self) -> Vec<u64> {
-        let mut v: Vec<u64> = self.levels.clone().into_iter().collect();
-        v.sort(); // todo: this should not be needed but somehow it is
+        let v = vec![0, 1, 2, 3];
+        assert_eq!(v.len() as u64, RING_SIZE + 1);
         v
+        // let mut v: Vec<u64> = self.levels.clone().into_iter().collect();
+        // v.sort(); // todo: this should not be needed but somehow it is
+        // v
     }
 
-    pub fn add_levels(&mut self, levels: &[u64]) {
-        for level in levels {
-            self.levels.insert(*level);
-        }
-    }
+    // pub fn add_levels(&mut self, levels: &[u64]) {
+    //     for level in levels {
+    //         self.levels.insert(*level);
+    //     }
+    // }
 
     // removes levels and returns a list of levels that have been removed
     pub fn remove_levels(&mut self) -> Vec<u64> {
-        let mut min_used_level = u64::MAX;
-        for c in self.commits.values() {
-            if c.level < min_used_level {
-                min_used_level = c.level;
-            }
-        }
-        min_used_level = min(min_used_level, self.current_level);
-        let lvls: Vec<u64> = self
-            .get_levels()
-            .into_iter()
-            .filter(|l| *l < min_used_level && *l != 0)
-            .collect();
-        for l in lvls.iter() {
-            self.levels.remove(l);
-        }
-        lvls
+        // let mut min_used_level = u64::MAX;
+        // for c in self.commits.values() {
+        //     if c.level < min_used_level {
+        //         min_used_level = c.level;
+        //     }
+        // }
+        // min_used_level = min(min_used_level, self.current_level);
+        // let lvls: Vec<u64> = self
+        //     .get_levels()
+        //     .into_iter()
+        //     .filter(|l| *l < min_used_level && *l != 0)
+        //     .collect();
+        // for l in lvls.iter() {
+        //     self.levels.remove(l);
+        // }
+        // lvls
+        vec![]
     }
 
     pub fn get_element_and_base(
@@ -408,8 +412,8 @@ fn read_all_commits<P: AsRef<Path>>(
     let mut max_level = 0u64;
 
     // important: level 0 is always needed
-    let level_zero = [0u64];
-    commit_store.lock().unwrap().add_levels(&level_zero);
+    // let level_zero = [0u64];
+    // commit_store.lock().unwrap().add_levels(&level_zero);
 
     let mut scanned_levels = Vec::new();
     scanned_levels.push(0u64);
@@ -426,7 +430,7 @@ fn read_all_commits<P: AsRef<Path>>(
                 scanned_levels.push(level);
             }
         }
-        commit_store.lock().unwrap().add_levels(&scanned_levels);
+        // commit_store.lock().unwrap().add_levels(&scanned_levels);
     }
     scanned_levels.sort();
 
@@ -456,7 +460,7 @@ fn read_all_commits<P: AsRef<Path>>(
         }
     }
 
-    commit_store.lock().unwrap().set_current_level(max_level);
+    // commit_store.lock().unwrap().set_current_level(max_level);
 
     Ok(())
 }
@@ -472,8 +476,19 @@ fn read_commit<P: AsRef<Path>>(
     Ok(commit)
 }
 
-fn page_path<P: AsRef<Path>>(memory_dir: P, page_index: usize) -> PathBuf {
-    memory_dir.as_ref().join(format!("{page_index}"))
+fn page_path(
+    contract_id_hex: impl AsRef<str>,
+    page_index: usize,
+    level: u64,
+    memory_dir: impl AsRef<Path>,
+) -> PathBuf {
+    memory_dir
+        .as_ref()
+        .join(EDGE_DIR)
+        .join(format!("{}", level))
+        .join(contract_id_hex.as_ref())
+        .join(format!("{page_index}"))
+    // contract_memory_dir.as_ref().join(format!("{page_index}"))
 }
 
 fn page_path_main<P: AsRef<Path>, S: AsRef<str>>(
@@ -562,13 +577,17 @@ fn commit_from_dir<P: AsRef<Path>>(
         None
     };
 
-    let (base, level) = if let Some(ref hash_hex) = commit_id {
-        let base_info_path = main_dir.join(hash_hex).join(BASE_FILE);
+    let (base, level, hash_hex) = if let Some(hash_hex) = commit_id {
+        let base_info_path = main_dir.join(&hash_hex).join(BASE_FILE);
         let base_info = base_from_path(base_info_path)?;
-        (base_info.maybe_base, base_info.level)
+        (base_info.maybe_base, base_info.level, hash_hex)
     } else {
-        (None, 0)
+        (None, 0, "missing hash hex".to_string())
     };
+    println!(
+        "==================================reading commit {} with level={}",
+        hash_hex, level
+    );
 
     let (index, contracts_merkle) = index_merkle_from_path(
         main_dir,
@@ -584,7 +603,7 @@ fn commit_from_dir<P: AsRef<Path>>(
     let memory_dir = main_dir.join(MEMORY_DIR);
 
     for (contract, contract_index) in index.iter() {
-        let contract_hex = hex::encode(contract);
+        let contract_hex = hex::encode(contract.as_bytes());
 
         // Check that all contracts in the index file have a corresponding
         // bytecode and memory pages specified.
@@ -613,7 +632,13 @@ fn commit_from_dir<P: AsRef<Path>>(
 
         for page_index in contract_index.page_indices() {
             // todo: improve this check, make sure it is correct
-            let main_page_path = page_path(&contract_memory_dir, *page_index);
+            let main_page_path =
+                page_path(&contract_hex, *page_index, level, &memory_dir);
+            println!(
+                "main_page_path={:?} is_file={}",
+                main_page_path,
+                main_page_path.is_file()
+            );
             if !main_page_path.is_file() {
                 let path = ContractSession::find_page(
                     *page_index,
@@ -633,6 +658,7 @@ fn commit_from_dir<P: AsRef<Path>>(
             }
         }
     }
+    println!("==================================end of reading commit {} with level={}", hash_hex, level);
 
     Ok(Commit::new(
         index,
@@ -652,7 +678,7 @@ fn index_merkle_from_path(
     level: u64,
     levels: &[u64],
 ) -> io::Result<(NewContractIndex, ContractsMerkle)> {
-    println!("CALLING index_merkle_from_path leaf_dir={:?} maybe_commit={:?} level={} levels={:?}", leaf_dir.as_ref(), maybe_commit_id.as_ref().map(|a|hex::encode(a.as_bytes())), level, levels);
+    println!("CALLING index_merkle_from_path leaf_dir={:?} maybe_commit={:?} level={}", leaf_dir.as_ref(), maybe_commit_id.as_ref().map(|a|hex::encode(a.as_bytes())), level);
     let leaf_dir = leaf_dir.as_ref();
 
     let mut index: NewContractIndex = NewContractIndex::new();
@@ -676,8 +702,8 @@ fn index_merkle_from_path(
                 &main_path,
             );
             println!(
-                "LOOKING for ================> level={} contract={} in {:?} with levels={:?}",
-                level, contract_id_hex, leaf_dir, levels
+                "LOOKING for ================> level={} contract={} in {:?}",
+                level, contract_id_hex, leaf_dir
             );
             let element_path = match maybe_element_path {
                 None => ContractSession::find_file_path_at_level(
@@ -1216,13 +1242,9 @@ fn write_commit<P: AsRef<Path>>(
     let mut commit =
         base.unwrap_or(Commit::from(&commit_store, base_info.maybe_base, 0));
 
-    let (level, levels, all_commits) = {
+    let (level, all_commits) = {
         let mut guard = commit_store.lock().unwrap();
-        (
-            guard.level_for_commit(),
-            guard.get_levels(),
-            guard.get_all_commits(),
-        )
+        (guard.level_for_commit(), guard.get_all_commits())
     };
     base_info.level = level;
     commit.level = level;
@@ -1246,11 +1268,6 @@ fn write_commit<P: AsRef<Path>>(
     println!("inner contracts={:?}", commit.get_inner_contracts());
     let root = *commit.root();
     let root_hex = hex::encode(root);
-    println!(
-        "write commit {} ============ merkle size={}",
-        root_hex,
-        commit.contracts_merkle.len()
-    );
     commit.maybe_hash = Some(root);
     commit.base = base_info.maybe_base;
 
@@ -1268,14 +1285,14 @@ fn write_commit<P: AsRef<Path>>(
         root_dir,
         &commit,
         commit_contracts,
-        root_hex,
+        &root_hex,
         base_info,
     )
     .map(|_| {
         commit_store.lock().unwrap().insert_commit(root, commit);
         root
     });
-    println!("write commit finished ============= level={} ===== lvls={:?}==============================================================", level, levels);
+    println!("write commit finished ======= {} ====== level={} ===================================================================", root_hex, level);
     result
 }
 
@@ -1580,14 +1597,14 @@ fn finalize_commit<P: AsRef<Path>>(
         for entry in fs::read_dir(&src_path)? {
             let filename = entry?.file_name().to_string_lossy().to_string();
             let src_file_path = src_path.join(&filename);
+            println!("finalize commit src_file_path={:?}", src_file_path);
             if src_file_path.is_file() {
-                let dst_file_path = ContractSession::find_file_path_at_level(
+                let dst_file_path = ContractSession::file_path_at_level(
                     &mem_path,
                     commit_level,
                     &contract_hex,
                     &filename,
-                    levels,
-                );
+                )?;
                 copy_file_to_level(
                     &dst_file_path,
                     &mem_path,
@@ -1595,6 +1612,11 @@ fn finalize_commit<P: AsRef<Path>>(
                     &contract_hex,
                     &filename,
                 )?;
+                println!(
+                    "overwriting {:?} with {:?}",
+                    dst_file_path, src_file_path,
+                );
+                println!("xren {:?} to {:?}", src_file_path, dst_file_path);
                 fs::rename(src_file_path, dst_file_path)?;
             }
         }
@@ -1603,13 +1625,12 @@ fn finalize_commit<P: AsRef<Path>>(
         let src_leaf_path = leaf_path.join(&contract_hex).join(&commit_id_str);
         let src_leaf_file_path = src_leaf_path.join(ELEMENT_FILE);
         if src_leaf_file_path.is_file() {
-            let dst_leaf_file_path = ContractSession::find_file_path_at_level(
+            let dst_leaf_file_path = ContractSession::file_path_at_level(
                 &leaf_path,
                 commit_level,
                 &contract_hex,
                 ELEMENT_FILE,
-                levels,
-            );
+            )?;
             copy_file_to_level(
                 &dst_leaf_file_path,
                 &leaf_path,

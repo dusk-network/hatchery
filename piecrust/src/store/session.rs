@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
-use std::{io, mem};
+use std::{fs, io, mem};
 
 use dusk_wasmtime::Engine;
 use piecrust_uplink::ContractId;
@@ -252,6 +252,25 @@ impl ContractSession {
             }
         }
         file_path
+    }
+
+    pub fn file_path_at_level(
+        main_dir: impl AsRef<Path>,
+        level: u64,
+        contract_id_str: impl AsRef<str>,
+        filename: impl AsRef<str>,
+    ) -> io::Result<PathBuf> {
+        let dir_path = if level != 0 {
+            main_dir
+                .as_ref()
+                .join(EDGE_DIR)
+                .join(format!("{}", level))
+                .join(contract_id_str.as_ref())
+        } else {
+            main_dir.as_ref().join(contract_id_str.as_ref())
+        };
+        fs::create_dir_all(&dir_path)?;
+        Ok(dir_path.join(filename.as_ref()))
     }
 
     /// Returns path to a file representing a given commit and element.
